@@ -11,7 +11,11 @@ from ear_smolvla.libero import (
     axis_angle_to_quaternion,
 )
 from ear_smolvla.libero_config import LIBEROConfig
-from ear_smolvla.metrics import perturbation_recovery, trajectory_metrics
+from ear_smolvla.metrics import (
+    perturbation_recovery,
+    spline_trajectory_errors,
+    trajectory_metrics,
+)
 from ear_smolvla.model import LANGUAGE_INT8_SKIP_MODULES, FlowExpert, VLMContext
 from ear_smolvla.processor import BatchProcessor, build_pose_targets
 from ear_smolvla.spline import (
@@ -174,6 +178,21 @@ def test_quaternion_signs_and_metrics():
     assert trajectory_metrics(trajectory, trajectory)["reference_rmse"] == 0
     recovery = perturbation_recovery(torch.tensor([[0.4, 0.2, 0.05]]), 0.1, 0.05)
     assert recovery["recovery_success"] == 1
+
+
+def test_decoded_spline_metrics_separate_pose_and_gripper_errors():
+    reference = torch.zeros(1, 4, 8)
+    reference[..., 3] = 1
+    reference[..., 7] = -1
+    prediction = reference.clone()
+    prediction[..., :3] += 1
+    prediction[..., 3:7] = torch.tensor([0.0, 1.0, 0.0, 0.0])
+    prediction[..., 7] = 1
+    errors = spline_trajectory_errors(prediction, reference, (slice(3, 7),))
+    assert torch.isclose(errors["translation_rmse"], torch.tensor(1.0))
+    assert torch.isclose(errors["rotation_error_deg"], torch.tensor(180.0))
+    assert torch.isclose(errors["gripper_rmse"], torch.tensor(2.0))
+    assert errors["gripper_accuracy"] == 0
 
 
 def test_fast_tokenizer_round_trip_contract():

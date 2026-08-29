@@ -6,6 +6,33 @@ import torch
 from torch import Tensor
 
 
+def spline_trajectory_errors(
+    trajectory: Tensor, reference: Tensor, quaternion_slices: tuple[slice, ...]
+) -> dict[str, Tensor]:
+    """Physical-space errors for decoded structured pose trajectories."""
+    if trajectory.shape != reference.shape or trajectory.ndim != 3:
+        raise ValueError("trajectory and reference must share shape [B,H,D]")
+    trajectory, reference = trajectory.float(), reference.float()
+    translations = [slice(quaternion.start - 3, quaternion.start) for quaternion in quaternion_slices]
+    translation_error = torch.cat(
+        [trajectory[..., part] - reference[..., part] for part in translations], dim=-1
+    )
+    rotation_errors = []
+    for quaternion in quaternion_slices:
+        predicted = torch.nn.functional.normalize(trajectory[..., quaternion], dim=-1)
+        target = torch.nn.functional.normalize(reference[..., quaternion], dim=-1)
+        dot = (predicted * target).sum(dim=-1).abs().clamp(max=1)
+        rotation_errors.append(torch.rad2deg(2 * torch.acos(dot)))
+    predicted_gripper = trajectory[..., -1]
+    target_gripper = reference[..., -1]
+    return {
+        "translation_rmse": translation_error.square().mean().sqrt(),
+        "rotation_error_deg": torch.stack(rotation_errors, dim=-1).mean(),
+        "gripper_rmse": (predicted_gripper - target_gripper).square().mean().sqrt(),
+        "gripper_accuracy": ((predicted_gripper >= 0) == (target_gripper >= 0)).float().mean(),
+    }
+
+
 def trajectory_metrics(
     trajectory: Tensor, reference: Tensor | None = None, dt: float = 0.05
 ) -> dict[str, Tensor]:

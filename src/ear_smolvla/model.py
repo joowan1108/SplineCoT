@@ -14,6 +14,7 @@ import torch.utils.checkpoint
 from torch import Tensor, nn
 
 from .config import EARSmolVLAConfig
+from .metrics import spline_trajectory_errors
 from .processor import (
     ACTION_CODE_TOKEN_MASK,
     ACTION_SPLINE_TARGET,
@@ -536,9 +537,18 @@ class EARSmolVLAModel(nn.Module):
 
         if self.config.train_spline_reasoner:
             ear_x, ear_velocity, ear_time = self._flow_batch(ear_params)
-            ear_loss = F.mse_loss(self.ear_expert(ear_x, ear_time, expert_context), ear_velocity)
+            ear_prediction = self.ear_expert(ear_x, ear_time, expert_context)
+            ear_loss = F.mse_loss(ear_prediction, ear_velocity)
+            with torch.no_grad():
+                predicted_ear_params = ear_x - ear_time[:, None, None] * ear_prediction
+                ear_metrics = spline_trajectory_errors(
+                    self.ear_spline.decode(predicted_ear_params),
+                    ear_target,
+                    self.quaternion_slices,
+                )
         else:
             ear_loss = self._zero.detach()
+            ear_metrics = {}
 
         phase = torch.zeros(ear_params.shape[0], device=ear_params.device)
         guidance = self.ear_spline.select_parameter_guidance(
@@ -560,6 +570,15 @@ class EARSmolVLAModel(nn.Module):
                 self.config.action_phase_span,
             )
             action_loss = F.mse_loss(action_prediction, action_velocity)
+            with torch.no_grad():
+                predicted_action_params = (
+                    action_x - action_time[:, None, None] * action_prediction
+                )
+                action_metrics = spline_trajectory_errors(
+                    self.action_spline.decode(predicted_action_params),
+                    action_target,
+                    self.quaternion_slices,
+                )
             if self.mode_head is not None:
                 mode_midpoint = sum(self.config.control_mode_values) / 2
                 mode_loss = F.binary_cross_entropy_with_logits(
@@ -570,6 +589,7 @@ class EARSmolVLAModel(nn.Module):
                 mode_loss = self._zero.detach()
         else:
             action_loss = mode_loss = self._zero.detach()
+            action_metrics = {}
         total = (
             self.config.fast_loss_weight * fast_loss
             + self.config.spline_loss_weight * ear_loss
@@ -582,6 +602,8 @@ class EARSmolVLAModel(nn.Module):
             "ear_loss": ear_loss,
             "action_loss": action_loss,
             "mode_loss": mode_loss,
+            **{f"ear_{key}": value for key, value in ear_metrics.items()},
+            **{f"action_{key}": value for key, value in action_metrics.items()},
         }
 
     def _integrate(self, velocity_fn, shape: tuple[int, ...], device: torch.device) -> Tensor:
