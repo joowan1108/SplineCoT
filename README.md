@@ -100,7 +100,7 @@ uv sync --extra eval
 MUJOCO_GL=egl uv run ear-eval-libero \
   --checkpoint outputs/libero_spatial \
   --suite libero_spatial \
-  --episodes 10 \
+  --episodes 50 \
   --output results/libero_spatial.json
 uv run ear-summarize-libero results/*.json --output results/summary.csv
 ```
