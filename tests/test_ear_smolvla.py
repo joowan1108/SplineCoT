@@ -12,7 +12,7 @@ from ear_smolvla.libero import (
 )
 from ear_smolvla.libero_config import LIBEROConfig
 from ear_smolvla.metrics import perturbation_recovery, trajectory_metrics
-from ear_smolvla.model import FlowExpert, VLMContext
+from ear_smolvla.model import LANGUAGE_INT8_SKIP_MODULES, FlowExpert, VLMContext
 from ear_smolvla.processor import BatchProcessor, build_pose_targets
 from ear_smolvla.spline import (
     QuadraticSpline,
@@ -52,6 +52,16 @@ def test_libero_profile_is_additive_and_trains_only_full_vision():
     assert not config.use_language_lora and not config.use_vision_lora
     assert config.train_vision_encoder_full
     assert (config.ear_horizon, config.action_horizon, config.dataset_fps) == (64, 16, 20)
+
+
+def test_int8_quantization_excludes_the_full_vision_and_connector_trees():
+    from transformers.quantizers.quantizers_utils import should_convert_module
+
+    assert not should_convert_module(
+        "model.vision_model.encoder.layers.0.self_attn.q_proj", LANGUAGE_INT8_SKIP_MODULES
+    )
+    assert not should_convert_module("model.connector.modality_projection", LANGUAGE_INT8_SKIP_MODULES)
+    assert should_convert_module("model.text_model.layers.0.self_attn.q_proj", LANGUAGE_INT8_SKIP_MODULES)
 
 
 def test_only_two_training_stages_remain():

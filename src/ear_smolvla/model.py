@@ -35,6 +35,8 @@ from .spline import (
     random_teacher_guidance_mask,
 )
 
+LANGUAGE_INT8_SKIP_MODULES = ["model.vision_model", "model.connector", "lm_head"]
+
 
 def sample_noise(shape: tuple[int, ...], device: torch.device | str) -> Tensor:
     return torch.randn(shape, device=device, dtype=torch.float32)
@@ -291,12 +293,12 @@ class EARSmolVLAModel(nn.Module):
         if config.quantize_language_base_int8:
             quantization = BitsAndBytesConfig(
                 load_in_8bit=True,
-                llm_int8_skip_modules=["vision_model", "connector", "lm_head"],
+                llm_int8_skip_modules=LANGUAGE_INT8_SKIP_MODULES,
             )
         if config.load_vlm_weights:
             kwargs: dict[str, Any] = {
                 "revision": config.vlm_revision,
-                "torch_dtype": torch.bfloat16,
+                "dtype": torch.bfloat16,
                 "low_cpu_mem_usage": True,
             }
             if quantization is not None:
