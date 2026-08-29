@@ -1,0 +1,40 @@
+[upstream]
+lerobot_url = "https://github.com/huggingface/lerobot"
+lerobot_commit = "7427f31801f944f5ec9ce53cda02862ce7d1638b"
+lerobot_runtime_dependency = false
+spline_policy_url = "https://github.com/mengze3/spline_policy"
+spline_policy_commit = "7b3893d3de3780fd94be72fc2be3b5898fbb5b47"
+knowledge_insulation = "arXiv:2505.23705"
+
+[model]
+vlm_id = "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
+vlm_revision = "482adb537c021c86670beed01cd58990d01e72e4"
+spline_basis = "quadratic-c1-kplus2-v1"
+action_order = ["base_motion_4", "control_mode_1", "ee_position_3", "ee_rotation_3", "gripper_1"]
+vlm_layers = 16
+ear_layers = 8
+action_expert_layers = 16
+ear_segments = 14
+ear_parameters = 16
+ear_horizon = 64
+action_segments = 6
+action_parameters = 8
+action_horizon = 16
+execute_steps = 4
+control_hz = 20
+
+[libero]
+state_dim = 8
+action_dim = 7
+spline_dim = 8
+cameras = 2
+language_trainable = false
+language_lora = false
+vision_lora = false
+vision_encoder_full_train = true
+ear_segments = 10
+ear_horizon = 64
+action_segments = 6
+action_horizon = 16
+execute_steps = 4
+control_hz = 20

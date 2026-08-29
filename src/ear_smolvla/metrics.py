@@ -1,0 +1,44 @@
+"""Small metrics used by EAR-SmolVLA evaluations."""
+
+from __future__ import annotations
+
+import torch
+from torch import Tensor
+
+
+def trajectory_metrics(
+    trajectory: Tensor, reference: Tensor | None = None, dt: float = 0.05
+) -> dict[str, Tensor]:
+    """Return smoothness and optional reference error for `[B, H, D]` paths."""
+    if trajectory.ndim != 3 or trajectory.shape[1] < 4:
+        raise ValueError("trajectory must have shape [B, H>=4, D]")
+    velocity = torch.diff(trajectory, dim=1) / dt
+    acceleration = torch.diff(velocity, dim=1) / dt
+    jerk = torch.diff(acceleration, dim=1) / dt
+    result = {
+        "mean_speed": velocity.norm(dim=-1).mean(),
+        "mean_acceleration": acceleration.norm(dim=-1).mean(),
+        "mean_jerk": jerk.norm(dim=-1).mean(),
+        "max_velocity_jump": torch.diff(velocity, dim=1).norm(dim=-1).max(),
+    }
+    if reference is not None:
+        if reference.shape != trajectory.shape:
+            raise ValueError("reference and trajectory shapes must match")
+        result["reference_rmse"] = (trajectory - reference).square().mean().sqrt()
+    return result
+
+
+def perturbation_recovery(distance: Tensor, threshold: float, dt: float = 0.05) -> dict[str, Tensor]:
+    """Measure whether and when each perturbed rollout returns to the spline tube."""
+    if distance.ndim != 2:
+        raise ValueError("distance must have shape [B, H]")
+    recovered = distance <= threshold
+    has_recovered = recovered.any(dim=1)
+    first = recovered.float().argmax(dim=1)
+    recovery_time = torch.where(has_recovered, first.to(distance.dtype) * dt, torch.inf)
+    return {
+        "recovery_success": has_recovered.float().mean(),
+        "recovery_time": recovery_time[has_recovered].mean()
+        if has_recovered.any()
+        else torch.tensor(torch.inf, device=distance.device),
+    }
