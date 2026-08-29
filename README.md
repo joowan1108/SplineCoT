@@ -81,7 +81,7 @@ uv run ear-train-libero \
   --steps 160000 \
   --batch-size 4 \
   --gradient-accumulation 16 \
-  --save-every 16000 \
+  --num-checkpoints 3 \
   --output outputs/libero_spatial
 ```
 
@@ -98,9 +98,9 @@ Simulator evaluation is an optional install and does not add LeRobot:
 ```bash
 uv sync --extra eval
 MUJOCO_GL=egl uv run ear-eval-libero \
-  --checkpoint outputs/libero_spatial \
+  --checkpoint outputs/libero_spatial/checkpoint-160000 \
   --suite libero_spatial \
-  --episodes 50 \
+  --episodes 10 \
   --output results/libero_spatial.json
 uv run ear-summarize-libero results/*.json --output results/summary.csv
 ```

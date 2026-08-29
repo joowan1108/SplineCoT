@@ -111,6 +111,19 @@ class LIBEROHDF5Sampler:
             handle.close()
 
 
+def checkpoint_steps(total_steps: int, accumulation: int, count: int) -> tuple[int, ...]:
+    if count < 0 or accumulation < 1 or total_steps < 1:
+        raise ValueError("steps and accumulation must be positive; checkpoint count cannot be negative")
+    if count == 0:
+        return ()
+    if total_steps % accumulation:
+        raise ValueError("checkpointed training requires steps divisible by gradient accumulation")
+    updates = total_steps // accumulation
+    if count > updates:
+        raise ValueError("checkpoint count cannot exceed optimizer updates")
+    return tuple(i * updates // count * accumulation for i in range(1, count + 1))
+
+
 def _to_device(value, device: torch.device):
     if isinstance(value, torch.Tensor):
         return value.to(device)
@@ -126,7 +139,7 @@ def main() -> None:
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation", type=int, default=16)
-    parser.add_argument("--save-every", type=int, default=0, help="Micro-steps between checkpoints")
+    parser.add_argument("--num-checkpoints", type=int, default=3)
     parser.add_argument("--stats", type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--seed", type=int, default=0)
@@ -139,8 +152,7 @@ def main() -> None:
     args = parser.parse_args()
     if not torch.cuda.is_available():
         raise RuntimeError("LIBERO training requires a CUDA GPU")
-    if args.save_every and args.save_every % args.gradient_accumulation:
-        raise ValueError("--save-every must be divisible by --gradient-accumulation")
+    save_steps = checkpoint_steps(args.steps, args.gradient_accumulation, args.num_checkpoints)
 
     torch.manual_seed(args.seed)
     config = LIBEROConfig()
@@ -211,7 +223,7 @@ def main() -> None:
                 optimizer.zero_grad(set_to_none=True)
             if step % 10 == 0:
                 print({"step": step, **metrics})
-            if args.save_every and (step + 1) % args.save_every == 0:
+            if step + 1 in save_steps:
                 checkpoint = args.output / f"checkpoint-{step + 1}"
                 policy.save_pretrained(checkpoint)
                 processor.save(checkpoint / "processor")
@@ -222,8 +234,9 @@ def main() -> None:
             optimizer.step()
     finally:
         sampler.close()
-    policy.save_pretrained(args.output)
-    processor.save(args.output / "processor")
+    if not save_steps:
+        policy.save_pretrained(args.output)
+        processor.save(args.output / "processor")
 
 
 if __name__ == "__main__":

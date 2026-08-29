@@ -144,7 +144,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--suite", choices=tuple(SUITE_MAX_STEPS), required=True)
-    parser.add_argument("--episodes", type=int, default=50)
+    parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--settle-steps", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)

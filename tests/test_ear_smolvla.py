@@ -27,7 +27,7 @@ from ear_smolvla.spline import (
     random_teacher_guidance_mask,
 )
 from ear_smolvla.train import stage_config
-from ear_smolvla.train_libero import LIBEROHDF5Sampler
+from ear_smolvla.train_libero import LIBEROHDF5Sampler, checkpoint_steps
 
 
 def small_config() -> EARSmolVLAConfig:
@@ -65,6 +65,10 @@ def test_libero_xyzw_quaternion_conversion():
     assert np.allclose(
         xyzw_to_axis_angle(np.array([1, 0, 0, 0])), np.array([np.pi, 0, 0]), atol=1e-6
     )
+
+
+def test_three_checkpoints_cover_the_full_training_run():
+    assert checkpoint_steps(160_000, 16, 3) == (53_328, 106_656, 160_000)
 
 
 def test_int8_quantization_excludes_the_full_vision_and_connector_trees():

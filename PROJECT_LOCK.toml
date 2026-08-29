@@ -22,6 +22,8 @@ action_parameters = 8
 action_horizon = 16
 execute_steps = 4
 control_hz = 20
+training_checkpoints = 3
+evaluation_episodes_per_task = 10
 
 [libero]
 state_dim = 8
