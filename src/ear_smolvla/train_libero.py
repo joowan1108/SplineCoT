@@ -126,6 +126,7 @@ def main() -> None:
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation", type=int, default=16)
+    parser.add_argument("--save-every", type=int, default=0, help="Micro-steps between checkpoints")
     parser.add_argument("--stats", type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--seed", type=int, default=0)
@@ -138,6 +139,8 @@ def main() -> None:
     args = parser.parse_args()
     if not torch.cuda.is_available():
         raise RuntimeError("LIBERO training requires a CUDA GPU")
+    if args.save_every and args.save_every % args.gradient_accumulation:
+        raise ValueError("--save-every must be divisible by --gradient-accumulation")
 
     torch.manual_seed(args.seed)
     config = LIBEROConfig()
@@ -208,6 +211,10 @@ def main() -> None:
                 optimizer.zero_grad(set_to_none=True)
             if step % 10 == 0:
                 print({"step": step, **metrics})
+            if args.save_every and (step + 1) % args.save_every == 0:
+                checkpoint = args.output / f"checkpoint-{step + 1}"
+                policy.save_pretrained(checkpoint)
+                processor.save(checkpoint / "processor")
         if args.steps % args.gradient_accumulation:
             torch.nn.utils.clip_grad_norm_(
                 policy.get_optim_params(), config.optimizer_grad_clip_norm

@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from ear_smolvla.config import EARSmolVLAConfig
+from ear_smolvla.eval_libero import xyzw_to_axis_angle
 from ear_smolvla.libero import (
     LIBEROBatchProcessor,
     axis_angle_to_quaternion,
@@ -57,6 +58,13 @@ def test_libero_profile_is_additive_and_trains_only_full_vision():
     assert not config.quantize_language_base_int8
     assert config.train_vision_encoder_full
     assert (config.ear_horizon, config.action_horizon, config.dataset_fps) == (64, 16, 20)
+
+
+def test_libero_xyzw_quaternion_conversion():
+    assert np.allclose(xyzw_to_axis_angle(np.array([0, 0, 0, 1])), 0)
+    assert np.allclose(
+        xyzw_to_axis_angle(np.array([1, 0, 0, 0])), np.array([np.pi, 0, 0]), atol=1e-6
+    )
 
 
 def test_int8_quantization_excludes_the_full_vision_and_connector_trees():

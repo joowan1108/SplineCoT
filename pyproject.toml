@@ -20,11 +20,14 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "ruff>=0.11,<1"]
 libero = ["h5py>=3.11,<4"]
+eval = ["libero==0.1.1"]
 
 [project.scripts]
 ear-train = "ear_smolvla.train:main"
 ear-memory-smoke = "ear_smolvla.memory_smoke:main"
 ear-train-libero = "ear_smolvla.train_libero:main"
+ear-eval-libero = "ear_smolvla.eval_libero:main"
+ear-summarize-libero = "ear_smolvla.summarize_libero:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

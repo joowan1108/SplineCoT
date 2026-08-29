@@ -78,9 +78,10 @@ LIBERO demonstration directory:
 uv sync --extra test --extra libero
 uv run ear-train-libero \
   --data /path/to/LIBERO/libero/datasets/libero_spatial \
-  --steps 30000 \
-  --batch-size 1 \
+  --steps 160000 \
+  --batch-size 4 \
   --gradient-accumulation 16 \
+  --save-every 16000 \
   --output outputs/libero_spatial
 ```
 
@@ -91,3 +92,15 @@ episode ends. Raw HDF5 images are rotated 180 degrees by default; pass
 `--no-rotate-images-180` if the local dataset was already corrected.
 LIBERO actions remain in their native `[-1,1]` convention; an optional stats
 file is applied only to the VLM state input.
+
+Simulator evaluation is an optional install and does not add LeRobot:
+
+```bash
+uv sync --extra eval
+MUJOCO_GL=egl uv run ear-eval-libero \
+  --checkpoint outputs/libero_spatial \
+  --suite libero_spatial \
+  --episodes 10 \
+  --output results/libero_spatial.json
+uv run ear-summarize-libero results/*.json --output results/summary.csv
+```

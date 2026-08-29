@@ -734,8 +734,12 @@ class EARSmolVLAPolicy(nn.Module):
         self.reset()
 
     def reset(self) -> None:
-        if getattr(self, "_pending", None) is not None:
-            self._pending.cancel()
+        pending = getattr(self, "_pending", None)
+        if pending is not None and not pending.cancel():
+            try:
+                pending.result()
+            except Exception:
+                pass
         self._active: ActionPlan | None = None
         self._pending: Future[ActionPlan] | None = None
         self._steps_on_active = 0
