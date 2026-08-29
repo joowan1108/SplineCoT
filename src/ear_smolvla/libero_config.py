@@ -33,6 +33,7 @@ class LIBEROConfig(EARSmolVLAConfig):
     use_language_lora: bool = False
     use_vision_lora: bool = False
     train_vision_encoder_full: bool = True
+    quantize_language_base_int8: bool = False
     lm_lora_rank: int = 0
     vision_lora_rank: int = 0
     optimizer_lr: float = 1e-4

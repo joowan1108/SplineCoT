@@ -145,7 +145,7 @@ def main() -> None:
         LIBEROPolicy.from_pretrained(args.checkpoint)
         if args.checkpoint
         else LIBEROPolicy(config)
-    ).train()
+    ).train().to("cuda")
     config = policy.config
     language_trainable = [
         name

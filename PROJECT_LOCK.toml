@@ -30,6 +30,7 @@ spline_dim = 8
 cameras = 2
 language_trainable = false
 language_lora = false
+language_dtype = "bfloat16"
 vision_lora = false
 vision_encoder_full_train = true
 ear_segments = 10

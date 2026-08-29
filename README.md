@@ -68,7 +68,7 @@ builds the pending MC-EAR/action-spline plan.
 
 The additive LIBERO profile leaves the RoboCasa configuration unchanged. It
 uses two cameras, state 8, action 7, and an 8D `EEF pose7 + gripper1` spline.
-The INT8 language model and LM head are fully frozen with no language LoRA;
+The BF16 language model and LM head are fully frozen with no language LoRA;
 FAST CE trains the complete vision encoder, connector, and state projection.
 
 Install only the small HDF5 reader extra and point the trainer at the official

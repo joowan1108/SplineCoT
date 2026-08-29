@@ -46,10 +46,11 @@ def test_config_is_the_locked_dual_spline_architecture():
 
 
 def test_libero_profile_is_additive_and_trains_only_full_vision():
-    config = LIBEROConfig(device="cpu", quantize_language_base_int8=False)
+    config = LIBEROConfig(device="cpu")
     assert (config.state_dim, config.action_dim, config.spline_dim, config.pose_dim) == (8, 7, 8, 7)
     assert len(config.image_keys) == 2 and config.has_control_mode is False
     assert not config.use_language_lora and not config.use_vision_lora
+    assert not config.quantize_language_base_int8
     assert config.train_vision_encoder_full
     assert (config.ear_horizon, config.action_horizon, config.dataset_fps) == (64, 16, 20)
 
