@@ -284,7 +284,7 @@ class EARSmolVLAModel(nn.Module):
     def __init__(self, config: EARSmolVLAConfig):
         super().__init__()
         from peft import LoraConfig, inject_adapter_in_model, prepare_model_for_kbit_training
-        from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
+        from transformers import AutoConfig, AutoModelForImageTextToText, AutoTokenizer, BitsAndBytesConfig
 
         self.config = config
         quantization = None
@@ -310,10 +310,9 @@ class EARSmolVLAModel(nn.Module):
                 config.vlm_model_name, revision=config.vlm_revision
             )
             self.vlm = AutoModelForImageTextToText.from_config(base_config)
-        self.processor = AutoProcessor.from_pretrained(
+        self.tokenizer = AutoTokenizer.from_pretrained(
             config.vlm_model_name, revision=config.vlm_revision
         )
-        self.tokenizer = self.processor.tokenizer
         self._text_model().layers = self._text_model().layers[: config.num_vlm_layers]
         context_dim = self.vlm.config.text_config.hidden_size
 
