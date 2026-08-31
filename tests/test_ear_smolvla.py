@@ -28,6 +28,7 @@ from ear_smolvla.spline import (
 )
 from ear_smolvla.train import stage_config
 from ear_smolvla.train_libero import LIBEROHDF5Sampler, checkpoint_steps
+from ear_smolvla.visualize_libero_splines import TOP_VIEW_STYLES
 
 
 def small_config() -> EARSmolVLAConfig:
@@ -71,6 +72,12 @@ def test_rollout_videos_only_cover_first_episode_of_first_three_tasks(tmp_path):
     assert rollout_video_path(tmp_path, "libero_spatial", 2, "task", 0) is not None
     assert rollout_video_path(tmp_path, "libero_spatial", 3, "task", 0) is None
     assert rollout_video_path(tmp_path, "libero_spatial", 0, "task", 1) is None
+
+
+def test_top_view_splines_have_distinct_styles():
+    assert len({style["color"] for style in TOP_VIEW_STYLES.values()}) == 3
+    assert len({style["linestyle"] for style in TOP_VIEW_STYLES.values()}) == 3
+    assert len({style["marker"] for style in TOP_VIEW_STYLES.values()}) == 3
 
 
 def test_three_checkpoints_cover_the_full_training_run():
