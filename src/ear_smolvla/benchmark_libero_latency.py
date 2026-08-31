@@ -13,6 +13,7 @@ import torch
 
 from .eval_libero import policy_input, task_init_states, to_device, xyzw_to_axis_angle
 from .libero import LIBEROBatchProcessor, LIBEROPolicy, libero_pose_from_state
+from .libero_config import LIBEROConfig
 
 
 def synchronize(device: torch.device) -> None:
@@ -41,7 +42,12 @@ def latency_stats(values: list[float]) -> dict[str, float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument(
+        "--random-init",
+        action="store_true",
+        help="Measure a freshly initialized current-config model instead of a checkpoint",
+    )
     parser.add_argument(
         "--suite",
         choices=("libero_spatial", "libero_object", "libero_goal", "libero_10"),
@@ -56,6 +62,8 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.random_init == (args.checkpoint is not None):
+        parser.error("provide exactly one of --checkpoint or --random-init")
     if args.warmup < 0 or args.repeats < 1 or args.settle_steps < 0:
         parser.error("--warmup/--settle-steps must be nonnegative and --repeats must be positive")
 
@@ -64,10 +72,16 @@ def main() -> None:
     from libero.libero.envs import OffScreenRenderEnv
 
     device = torch.device(args.device)
-    policy = LIBEROPolicy.from_pretrained(args.checkpoint).eval().to(device)
-    processor = LIBEROBatchProcessor.load(
-        policy.config, args.checkpoint / "processor", tokenizer=policy.model.tokenizer
-    )
+    if args.random_init:
+        policy = LIBEROPolicy(LIBEROConfig(device=str(device))).eval().to(device)
+        processor = LIBEROBatchProcessor(policy.config, tokenizer=policy.model.tokenizer)
+        checkpoint_name = "random-init"
+    else:
+        policy = LIBEROPolicy.from_pretrained(args.checkpoint).eval().to(device)
+        processor = LIBEROBatchProcessor.load(
+            policy.config, args.checkpoint / "processor", tokenizer=policy.model.tokenizer
+        )
+        checkpoint_name = str(args.checkpoint)
     suite = benchmark.get_benchmark_dict()[args.suite]()
     if not 0 <= args.task_id < suite.n_tasks:
         parser.error(f"--task-id must be between 0 and {suite.n_tasks - 1}")
@@ -191,7 +205,7 @@ def main() -> None:
         "suite": args.suite,
         "task_id": args.task_id,
         "task": task.name,
-        "checkpoint": str(args.checkpoint),
+        "checkpoint": checkpoint_name,
         "device": torch.cuda.get_device_name(device) if device.type == "cuda" else str(device),
         "warmup": args.warmup,
         "repeats": args.repeats,
