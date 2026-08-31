@@ -23,7 +23,7 @@ class LIBEROConfig(EARSmolVLAConfig):
     initial_gripper_command: float = -1.0
 
     ear_segments: int = 10
-    ear_horizon: int = 64
+    ear_horizon: int = 32
     action_segments: int = 6
     action_horizon: int = 16
     dataset_fps: float = 20.0

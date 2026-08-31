@@ -60,9 +60,9 @@ with tangent-projected execution, not an exact Riemannian SO(3) spline.
 ## EAR spline
 
 The EAR is a 16-layer flow-matching transformer. It predicts 16 free vectors,
-which decode to a 14-segment C1 spline over a broad 64-tick representation of
+which decode to a 14-segment C1 spline over a broad 32-tick representation of
 the available atomic-skill trajectory. At 20 Hz this nominal representation
-contains up to 3.2 seconds of guidance; longer or shorter demonstrations are
+contains up to 1.6 seconds of guidance; longer or shorter demonstrations are
 mapped to the fixed representation by valid-prefix linear resampling.
 
 The EAR is a predictive reference and is not evaluated as the control field

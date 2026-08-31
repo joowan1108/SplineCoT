@@ -41,7 +41,7 @@ class EARSmolVLAConfig:
 
     # The EAR is broad; the final executable spline is short and precise.
     ear_segments: int = 14
-    ear_horizon: int = 64
+    ear_horizon: int = 32
     action_segments: int = 6
     action_horizon: int = 16
     dataset_fps: float = 20.0

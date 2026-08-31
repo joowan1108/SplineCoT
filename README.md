@@ -11,7 +11,7 @@ for provenance and tensor conventions.
 - VLM objective: FAST action-token CE only. There is no subtask decoder or
   subtask CE.
 - EAR: 16-layer flow expert producing 16 free parameters for a 14-segment C1
-  quadratic spline over a 64-tick broad horizon.
+  quadratic spline over a 32-tick broad horizon.
 - Action expert: 16-layer flow expert producing 8 free parameters for a
   6-segment C1 quadratic spline over the next 16 ticks.
 - Execution: four ticks are normally consumed before handoff; the action
@@ -32,7 +32,7 @@ Each prebatched `.pt` file contains the three configured camera tensors,
 `observation.state_is_pad` marks invalid suffixes. No subtask annotation is
 read.
 
-The EAR target resamples the whole available demonstration suffix to 64
+The EAR target resamples the whole available demonstration suffix to 32
 points. The action target keeps the next 16 real control ticks, repeating the
 last tick only when the episode suffix is shorter. Both targets are fitted by
 the fixed quadratic-spline pseudoinverse.
@@ -94,7 +94,7 @@ uv run ear-train-libero \
 
 The reader consumes the official `data/demo_*/` HDF5 layout directly, so it
 does not install LeRobot. It samples arbitrary episode times, keeps the next
-64 real ticks for EAR and the next 16 for the action spline, and pads only at
+32 real ticks for EAR and the next 16 for the action spline, and pads only at
 episode ends. Raw HDF5 images are rotated 180 degrees by default; pass
 `--no-rotate-images-180` if the local dataset was already corrected.
 LIBERO actions remain in their native `[-1,1]` convention; an optional stats

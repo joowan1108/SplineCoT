@@ -53,7 +53,7 @@ def small_config() -> EARSmolVLAConfig:
 def test_config_is_the_locked_dual_spline_architecture():
     config = small_config()
     assert (config.num_vlm_layers, config.spline_reasoner_layers, config.action_expert_layers) == (16, 16, 16)
-    assert (config.ear_segments, config.ear_parameter_count, config.ear_horizon) == (14, 16, 64)
+    assert (config.ear_segments, config.ear_parameter_count, config.ear_horizon) == (14, 16, 32)
     assert (config.action_segments, config.action_parameter_count, config.action_horizon) == (6, 8, 16)
     assert config.action_horizon == 16 and config.dataset_fps == 20
     assert config.spline_dim == 15 and config.mc_samples >= 2
@@ -141,7 +141,16 @@ def test_libero_profile_is_additive_and_trains_only_full_vision():
     assert not config.use_language_lora and not config.use_vision_lora
     assert not config.quantize_language_base_int8
     assert config.train_vision_encoder_full
-    assert (config.ear_horizon, config.action_horizon, config.dataset_fps) == (64, 16, 20)
+    assert (config.ear_horizon, config.action_horizon, config.dataset_fps) == (32, 16, 20)
+    assert config.action_phase_span == pytest.approx(15 / 31)
+    guidance = QuadraticSpline(
+        config.ear_segments, config.ear_horizon, (slice(3, 7),)
+    ).select_parameter_guidance(
+        torch.zeros(1, config.ear_parameter_count, config.spline_dim),
+        torch.zeros(1),
+        config.action_phase_span,
+    )
+    assert guidance.valid.sum().item() == 15
 
 
 def test_libero_xyzw_quaternion_conversion():
@@ -391,9 +400,9 @@ def test_libero_processor_builds_fixed_future_pose_splines():
         {config.state_key: state, config.action_key: actions, "task": ["pick up mug"]},
         training=True,
     )
-    assert batch["spline.ear_target"].shape == (1, 64, 8)
+    assert batch["spline.ear_target"].shape == (1, 32, 8)
     assert batch["spline.action_target"].shape == (1, 16, 8)
-    torch.testing.assert_close(batch["spline.ear_target"][0, -1, 0], torch.tensor(63.0))
+    torch.testing.assert_close(batch["spline.ear_target"][0, -1, 0], torch.tensor(31.0))
     torch.testing.assert_close(batch["spline.action_target"][0, -1, 0], torch.tensor(15.0))
 
 
