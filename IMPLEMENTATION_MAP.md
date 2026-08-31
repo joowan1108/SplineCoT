@@ -49,24 +49,20 @@ bias, scales each value, and gates the total guidance residual.
 ## Inference
 
 ```text
-control worker, 20 Hz                 background planning worker
-
-latest pose                           submitted observation
-    |                                      |
-closest point on Active spline             VLM (one call)
-    |                                      |
-tangent + attraction field                 shared-context MC EAR samples
-    |                                      |
-12D robot action                           mean/covariance -> time variance
-                                           |
-                                overlap + soft-confidence weighting
-                                           |
-                                   Pending action spline
-
-             Pending ready after >=4 ticks -> Active
+Active action spline
+        |
+closest-point field from latest pose
+        |
+execute all 16 ticks
+        |
+post-horizon observation
+        |
+VLM once -> shared-context MC EAR -> confidence-weighted action spline
+        |
+first parameter fixed to measured pose -> replace Active
 ```
 
 The control path does not call the VLM. It only evaluates the small quadratic
-spline field from the latest measured state. The current pose is conditioned
-as the first spline parameter during both training and inference; no generated
-handle is overwritten after sampling.
+spline field from the latest measured state during an action horizon. Planning
+is synchronous only after that horizon. The post-horizon measured pose is
+conditioned as the first spline parameter; no generated handle is overwritten.

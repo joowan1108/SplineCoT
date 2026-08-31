@@ -85,9 +85,7 @@ def main() -> None:
     suite = benchmark.get_benchmark_dict()[args.suite]()
     if not 0 <= args.task_id < suite.n_tasks:
         parser.error(f"--task-id must be between 0 and {suite.n_tasks - 1}")
-    execution_steps = (
-        policy.config.n_action_steps if args.execution_steps is None else args.execution_steps
-    )
+    execution_steps = policy.config.action_horizon if args.execution_steps is None else args.execution_steps
     if not 1 <= execution_steps <= policy.config.action_horizon:
         parser.error(f"--execution-steps must be between 1 and {policy.config.action_horizon}")
 
@@ -198,7 +196,6 @@ def main() -> None:
                 completed_steps.append(completed)
     finally:
         env.close()
-        policy._planner.shutdown(wait=True, cancel_futures=True)
 
     nominal_execution_ms = execution_steps / policy.config.dataset_fps * 1_000
     result = {

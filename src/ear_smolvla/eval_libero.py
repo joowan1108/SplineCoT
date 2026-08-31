@@ -171,7 +171,7 @@ def evaluate(args: argparse.Namespace) -> dict:
             finally:
                 env.close()
     finally:
-        policy._planner.shutdown(wait=True, cancel_futures=True)
+        policy.reset()
 
     tasks = []
     for task_id in range(suite.n_tasks):

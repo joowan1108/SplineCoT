@@ -62,9 +62,10 @@ guidance ramps from zero after 10% of training to a final exact/soft/inferred
 contribute less to attention; there is no learned NULL guidance.
 
 For inference, preprocess with `BatchProcessor(..., training=False)` and call
-`policy.select_action(batch)` every control tick. The active action spline is
-cheaply evaluated on the control path while a one-worker background planner
-builds the pending MC-EAR/action-spline plan.
+`policy.select_action(batch)` every control tick. The policy executes all 16
+ticks of the Active action spline, then synchronously builds its replacement
+from the first post-horizon observation. The new spline starts at that measured
+pose, providing C0 plan continuity without cross-plan C1 constraints.
 
 ## LIBERO profile
 
@@ -124,7 +125,6 @@ MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=0 uv run ear-benchmark-libero-latency \
   --output results/latency/libero_spatial-task-0.json
 ```
 
-The default execution interval is `n_action_steps` (currently 4 ticks at
-20 Hz). Pass `--execution-steps 16` to measure simulator execution for the
-entire current action-spline horizon. The JSON separates measured simulator
-compute time from the fixed physical control duration.
+The default execution interval is the complete 16-tick action-spline horizon
+at 20 Hz. The JSON separates measured simulator compute time from the fixed
+physical control duration.

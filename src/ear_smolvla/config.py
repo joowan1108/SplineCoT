@@ -44,7 +44,6 @@ class EARSmolVLAConfig:
     ear_horizon: int = 64
     action_segments: int = 6
     action_horizon: int = 16
-    n_action_steps: int = 4
     dataset_fps: float = 20.0
     num_flow_steps: int = 10
 
@@ -148,8 +147,6 @@ class EARSmolVLAConfig:
             raise ValueError("control_mode_values must contain increasing low/high commands")
         if len(self.image_keys) != 3:
             raise ValueError("EAR-SmolVLA expects exactly three RoboCasa cameras")
-        if self.n_action_steps > self.action_horizon:
-            raise ValueError("n_action_steps cannot exceed action_horizon")
         if self.ear_horizon <= self.action_horizon:
             raise ValueError("EAR horizon must be broader than the final action horizon")
         if self.mc_samples < 2:
@@ -194,6 +191,7 @@ class EARSmolVLAConfig:
         # Compatibility with checkpoints saved before conditional MC reused one VLM context.
         data.pop("mc_image_noise_std", None)
         data.pop("mc_state_noise_std", None)
+        data.pop("n_action_steps", None)
         for key in (
             "image_keys",
             "resize_imgs_with_padding",

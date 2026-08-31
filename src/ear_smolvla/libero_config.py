@@ -26,7 +26,6 @@ class LIBEROConfig(EARSmolVLAConfig):
     ear_horizon: int = 64
     action_segments: int = 6
     action_horizon: int = 16
-    n_action_steps: int = 4
     dataset_fps: float = 20.0
 
     # FAST gradients cross the frozen LM and update the full vision encoder.
@@ -58,8 +57,6 @@ class LIBEROConfig(EARSmolVLAConfig):
             raise ValueError("expert_hidden_size must be divisible by expert_heads")
         if self.ear_horizon <= self.action_horizon:
             raise ValueError("EAR horizon must exceed the action horizon")
-        if self.n_action_steps > self.action_horizon:
-            raise ValueError("n_action_steps cannot exceed action_horizon")
         if self.mc_samples < 2:
             raise ValueError("At least two Monte Carlo samples are required")
         if (

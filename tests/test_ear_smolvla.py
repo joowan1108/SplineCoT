@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,10 +22,11 @@ from ear_smolvla.metrics import (
 from ear_smolvla.model import (
     LANGUAGE_INT8_SKIP_MODULES,
     EARSmolVLAModel,
+    EARSmolVLAPolicy,
     FlowExpert,
     VLMContext,
 )
-from ear_smolvla.processor import BatchProcessor, build_pose_targets
+from ear_smolvla.processor import SPLINE_CURRENT_POSE, BatchProcessor, build_pose_targets
 from ear_smolvla.spline import (
     QuadraticSpline,
     field_to_libero_action,
@@ -53,7 +55,7 @@ def test_config_is_the_locked_dual_spline_architecture():
     assert (config.num_vlm_layers, config.spline_reasoner_layers, config.action_expert_layers) == (16, 16, 16)
     assert (config.ear_segments, config.ear_parameter_count, config.ear_horizon) == (14, 16, 64)
     assert (config.action_segments, config.action_parameter_count, config.action_horizon) == (6, 8, 16)
-    assert config.n_action_steps == 4 and config.dataset_fps == 20
+    assert config.action_horizon == 16 and config.dataset_fps == 20
     assert config.spline_dim == 15 and config.mc_samples >= 2
 
 
@@ -62,6 +64,62 @@ def test_latency_summary_reports_percentiles_in_milliseconds():
     assert summary["mean"] == 2.5 and summary["median"] == 2.5
     assert summary["min"] == 1.0 and summary["max"] == 4.0
     assert 3.0 < summary["p95"] < 4.0
+
+
+def test_policy_replans_only_after_full_horizon_and_anchors_to_latest_pose():
+    class DummySpline:
+        def closest_point_field(self, params, pose, attraction, progression):
+            batch = pose.shape[0]
+            return torch.zeros_like(pose), torch.zeros(batch), torch.zeros(batch)
+
+        def evaluate(self, params, phase):
+            return params[:, 0]
+
+    class DummyModel(torch.nn.Module):
+        pose_dim = 2
+
+        def __init__(self):
+            super().__init__()
+            self.action_spline = DummySpline()
+            self.planned_poses = []
+
+        def plan(self, pose):
+            self.planned_poses.append(pose.clone())
+            params = pose.new_zeros(pose.shape[0], 3, 3)
+            params[:, 0, :2] = pose
+            return SimpleNamespace(params=params, control_mode=pose.new_zeros(pose.shape[0], 1))
+
+    class DummyPolicy(EARSmolVLAPolicy):
+        def __init__(self):
+            torch.nn.Module.__init__(self)
+            self.config = SimpleNamespace(
+                action_horizon=2,
+                state_key="state",
+                field_attraction=2.0,
+                field_progression=1.0,
+            )
+            self.model = DummyModel()
+            self.reset()
+
+        def _planning_inputs(self, batch):
+            return (batch[SPLINE_CURRENT_POSE],)
+
+        def _field_to_action(self, field, current_pose, gripper, control_mode):
+            return field
+
+    def batch(pose):
+        return {"state": pose, SPLINE_CURRENT_POSE: pose}
+
+    policy = DummyPolicy()
+    start = torch.tensor([[1.0, 2.0]])
+    end = torch.tensor([[3.0, 4.0]])
+    policy.select_action(batch(start))
+    policy.select_action(batch(torch.tensor([[2.0, 3.0]])))
+    assert len(policy.model.planned_poses) == 1
+    policy.select_action(batch(end))
+    assert len(policy.model.planned_poses) == 2
+    torch.testing.assert_close(policy.model.planned_poses[-1], end)
+    torch.testing.assert_close(policy._active.params[:, 0, :2], end)
 
 
 def test_guidance_curriculum_moves_continuously_from_teacher_to_final_mix():

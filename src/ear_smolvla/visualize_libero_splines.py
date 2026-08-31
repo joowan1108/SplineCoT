@@ -175,7 +175,6 @@ def main() -> None:
             print(path)
     finally:
         sampler.close()
-        policy._planner.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == "__main__":

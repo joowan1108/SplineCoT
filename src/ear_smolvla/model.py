@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import math
-from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -841,18 +839,11 @@ class EARSmolVLAPolicy(nn.Module):
         super().__init__()
         self.config = config
         self.model = EARSmolVLAModel(config)
-        self._planner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ear-planner")
         self.reset()
 
     def reset(self) -> None:
-        pending = getattr(self, "_pending", None)
-        if pending is not None and not pending.cancel():
-            with suppress(Exception):
-                pending.result()
         self._active: ActionPlan | None = None
-        self._pending: Future[ActionPlan] | None = None
         self._steps_on_active = 0
-        self.last_planning_error: Exception | None = None
 
     def supports_text_generation(self) -> bool:
         return False
@@ -971,44 +962,23 @@ class EARSmolVLAPolicy(nn.Module):
             plan.control_mode[:, None].expand(-1, trajectory.shape[1], -1),
         )
 
-    def _submit_plan(self, batch: dict[str, Tensor]) -> None:
-        inputs = detach_tree(self._planning_inputs(batch))
-        self._pending = self._planner.submit(self._plan_in_background, inputs)
-
-    def _plan_in_background(self, inputs) -> ActionPlan:
-        plan = self.model.plan(*inputs)
-        if plan.params.is_cuda:
-            torch.cuda.current_stream(plan.params.device).synchronize()
-        return plan
-
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
         self.eval()
-        if self._active is None:
+        # Finish the full action horizon, then plan synchronously from the
+        # first observation after that horizon. The conditioned first spline
+        # parameter makes the handoff C0 at the measured pose.
+        if self._active is None or self._steps_on_active >= self.config.action_horizon:
             self._active = self.model.plan(*self._planning_inputs(batch))
             self._steps_on_active = 0
-        if self._pending is None:
-            self._submit_plan(batch)
-        if self._pending is not None and self._pending.done():
-            error = self._pending.exception()
-            if error is not None:
-                self.last_planning_error = error
-                self._pending = None
-            elif self._steps_on_active >= self.config.n_action_steps:
-                self._active = self._pending.result()
-                self._pending = None
-                self._steps_on_active = 0
         raw = batch[self.config.state_key]
         raw = raw[:, 0] if raw.ndim == 3 else raw
         current_pose = batch.get(SPLINE_CURRENT_POSE, raw[:, : self.model.pose_dim])
-        progression = self.config.field_progression
-        if self._steps_on_active >= self.config.action_horizon:
-            progression = 0.0
         field, phase, _ = self.model.action_spline.closest_point_field(
             self._active.params[..., : self.model.pose_dim],
             current_pose,
             self.config.field_attraction,
-            progression,
+            self.config.field_progression,
         )
         gripper = self.model.action_spline.evaluate(self._active.params, phase)[
             ..., self.model.pose_dim : self.model.pose_dim + 1

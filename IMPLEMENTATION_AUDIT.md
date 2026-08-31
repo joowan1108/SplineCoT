@@ -16,9 +16,9 @@
 | Soft confidence before action expert | confidence biases logits, scales values, and gates the guidance residual; no learned NULL | Implemented |
 | Action flow realization | closest-point tangent plus attraction recomputed from latest pose | Implemented |
 | Internal C1 action spline | quadratic control construction enforces equal boundary derivatives | Implemented |
-| Non-destructive plan handoff | no post-sampling handle overwrite; first pose is conditioned before sampling | Implemented |
+| C0 plan handoff | after 16 ticks, the next plan starts from the post-horizon measured pose | Implemented |
 | Endpoint-safe projection | endpoints remain unconditional closest-point candidates | Implemented |
-| Asynchronous Active/Pending execution | one background planning worker; active field stays on control path | Implemented |
+| Synchronous full-horizon replacement | no Pending plan; replan only from the observation after all 16 ticks | Implemented |
 | LeRobot-independent package | no LeRobot imports or runtime dependency | Implemented |
 | Additive LIBERO profile | separate state8/action7/spline8 config and HDF5 trainer | Implemented |
 | LIBERO language freeze | no LM LoRA; text model and LM head excluded from optimizer | Implemented |

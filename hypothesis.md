@@ -73,8 +73,8 @@ which future intervals are reliable enough to guide the action expert.
 
 The action expert is a 16-layer flow-matching transformer. It predicts eight
 free vectors, which decode to a six-segment C1 spline covering the next 16
-real control ticks, or 0.75 seconds between endpoints at 20 Hz. Normally four actions, or 0.2
-seconds, are executed before a ready pending plan may replace it.
+real control ticks, or 0.75 seconds between endpoints at 20 Hz. All 16 actions
+are executed before the next observation is used to construct a new plan.
 
 Each action parameter query first self-attends with the other action
 parameters and cross-attends to the detached VLM context. A separate
@@ -119,7 +119,7 @@ distribution for one fixed observation. It does not measure sensitivity to
 image or state perturbations; calibration must therefore compare this variance
 against held-out spline error.
 
-## Closed-loop execution and asynchronous planning
+## Closed-loop execution and synchronous plan replacement
 
 The control path owns an Active action spline. At every 20 Hz tick it projects
 the latest measured pose to the closest point on that spline and evaluates a
@@ -127,18 +127,17 @@ field combining forward tangent motion with attraction back toward the spline.
 This field recomputation is the source of local correction and perturbation
 recovery; it does not require a VLM forward pass.
 
-At the same time, one background planning worker consumes the latest submitted
-observation, computes one VLM context, batched conditional Monte Carlo EAR distribution,
-overlapping confidence-gated guidance, and a Pending action spline. After at
-least four active ticks, a completed Pending spline can be committed. If it is
-not ready, the Active spline continues; after its nominal horizon, tangent
-progression is disabled so the field safely attracts toward the endpoint.
+After all 16 ticks have executed, the first subsequent observation is passed
+synchronously through one VLM call, the conditional Monte Carlo EAR,
+confidence-gated overlap attention, and the action expert. The completed plan
+then replaces the Active plan before another action is issued. No Pending plan
+is generated from an observation captured during the previous action horizon.
 
 The action spline's internal boundaries are C1 by construction. Its first
-free parameter is conditioned on the measured pose used to create the plan;
-no post-sampling parameter overwrite distorts the generated spline. Continuity
-between an asynchronously generated Pending spline and the later measured pose
-at commit time is not guaranteed and remains an evaluation target.
+free parameter is conditioned on the measured pose from the post-horizon
+observation, so consecutive executed plans are C0 at the actual robot pose.
+No derivative constraint is imposed across EAR or action-plan boundaries;
+internal spline C1 remains unchanged.
 
 ## Data and fixed target construction
 
@@ -165,12 +164,12 @@ The main comparisons are: no EAR guidance, ungated EAR parameter attention,
 uncertainty-gated EAR attention, decoded-point guidance, and a non-spline
 action expert. Measurements include task success, contact-stage success,
 perturbation recovery and recovery time, false progression after failed
-grasps, active-to-pending velocity jump, trajectory jerk, uncertainty
+grasps, plan-boundary velocity jump, trajectory jerk, uncertainty
 calibration, effective guidance strength, planning p50/p95/p99 latency, control
 tick latency, peak VRAM, and training throughput.
 
-The asynchronous design removes VLM inference from the hard 20 Hz control
-path, but it does not make planning free. The deployment buffer and four-tick
-commit interval must be tuned from measured p99 planning latency. Effectiveness,
-skill-duration coverage, confidence threshold, and the advantage over world
-models or subgoal-image guidance remain empirical claims to validate.
+Synchronous replanning intentionally permits a hold between action horizons.
+Its duration must be reported with synchronized CUDA timing alongside task
+performance. Effectiveness, skill-duration coverage, confidence calibration,
+and the advantage over world models or subgoal-image guidance remain empirical
+claims to validate.
