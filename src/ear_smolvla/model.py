@@ -236,7 +236,8 @@ class FlowExpert(nn.Module):
                 + self.query_fraction[None, : values.shape[1]].to(guidance_phase)
                 * guidance_phase_span
             ).clamp_max(1)
-            hidden = hidden + self.guidance_query_phase(global_phase[..., None]).to(hidden.dtype)
+            phase_input = global_phase[..., None].to(self.guidance_query_phase.weight.dtype)
+            hidden = hidden + self.guidance_query_phase(phase_input).to(hidden.dtype)
             guidance_memory, guidance_bias = self._guidance_memory(
                 guidance, values.shape[1]
             )

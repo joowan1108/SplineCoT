@@ -165,6 +165,7 @@ def test_action_parameter_attention_blocks_upstream_gradients():
     expert = FlowExpert(
         value_dim=3, horizon=4, layers=1, context_dim=10, guidance_dim=3, config=config
     )
+    expert.guidance_query_phase.to(torch.bfloat16)
     source = torch.randn(2, 5, 10, requires_grad=True)
     context = VLMContext(source, (source,), torch.ones(2, 5, dtype=torch.bool)).detached()
     ear = QuadraticSpline(2, 10).select_parameter_guidance(
