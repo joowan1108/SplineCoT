@@ -12,6 +12,17 @@ EE_QUAT = slice(10, 14)
 POSE_DIM = 14
 
 
+def _replace_channel_slices(value: Tensor, replacements: list[tuple[slice, Tensor]]) -> Tensor:
+    """Replace channel slices without invalidating autograd views."""
+    parts = []
+    start = 0
+    for channel_slice, replacement in replacements:
+        parts.extend((value[..., start : channel_slice.start], replacement))
+        start = channel_slice.stop
+    parts.append(value[..., start:])
+    return torch.cat(parts, dim=-1)
+
+
 def _valid_quaternion_slices(dimension: int, quaternion_slices: tuple[slice, ...]) -> tuple[slice, ...]:
     return tuple(item for item in quaternion_slices if item.stop is not None and item.stop <= dimension)
 
@@ -20,16 +31,16 @@ def make_quaternion_signs_continuous(
     poses: Tensor, quaternion_slices: tuple[slice, ...] = (BASE_QUAT, EE_QUAT)
 ) -> Tensor:
     """Choose equivalent quaternion signs continuously along a trajectory."""
-    result = poses.clone()
+    replacements = []
     for quat_slice in _valid_quaternion_slices(poses.shape[-1], quaternion_slices):
-        q = result[..., quat_slice]
+        q = poses[..., quat_slice]
         if q.shape[-2] < 2:
             continue
         dots = (q[..., 1:, :] * q[..., :-1, :]).sum(dim=-1)
         flips = torch.where(dots < 0, -torch.ones_like(dots), torch.ones_like(dots))
         signs = torch.cat([torch.ones_like(flips[..., :1]), flips], dim=-1).cumprod(dim=-1)
-        result[..., quat_slice] = q * signs[..., None]
-    return result
+        replacements.append((quat_slice, q * signs[..., None]))
+    return _replace_channel_slices(poses, replacements) if replacements else poses
 
 
 def normalize_pose_quaternions(
@@ -37,10 +48,11 @@ def normalize_pose_quaternions(
     eps: float = 1e-8,
     quaternion_slices: tuple[slice, ...] = (BASE_QUAT, EE_QUAT),
 ) -> Tensor:
-    result = poses.clone()
+    replacements = []
     for quat_slice in _valid_quaternion_slices(poses.shape[-1], quaternion_slices):
-        result[..., quat_slice] = torch.nn.functional.normalize(result[..., quat_slice], dim=-1, eps=eps)
-    return result
+        normalized = torch.nn.functional.normalize(poses[..., quat_slice], dim=-1, eps=eps)
+        replacements.append((quat_slice, normalized))
+    return _replace_channel_slices(poses, replacements) if replacements else poses
 
 
 def quaternion_component_velocity_to_angular(q: Tensor, q_dot: Tensor) -> Tensor:
@@ -278,12 +290,15 @@ class QuadraticSpline(nn.Module):
         if parameter_samples.ndim != 4 or parameter_samples.shape[0] < 2:
             raise ValueError("parameter_samples must have shape [S>=2,B,P,D]")
         if self.quaternion_slices:
-            parameter_samples = parameter_samples.clone()
+            replacements = []
             for quat_slice in _valid_quaternion_slices(parameter_samples.shape[-1], self.quaternion_slices):
                 reference = parameter_samples[:1, ..., quat_slice]
                 dot = (parameter_samples[..., quat_slice] * reference).sum(dim=(-1, -2))
                 sign = torch.where(dot < 0, -torch.ones_like(dot), torch.ones_like(dot))
-                parameter_samples[..., quat_slice] *= sign[..., None, None]
+                replacements.append(
+                    (quat_slice, parameter_samples[..., quat_slice] * sign[..., None, None])
+                )
+            parameter_samples = _replace_channel_slices(parameter_samples, replacements)
         mean = parameter_samples.mean(dim=0)
         centered = parameter_samples - mean[None]
         covariance = torch.einsum("sbpd,sbqd->bdpq", centered, centered)
@@ -340,14 +355,13 @@ def project_quaternion_velocity(
     quaternion_slices: tuple[slice, ...] = (BASE_QUAT, EE_QUAT),
 ) -> Tensor:
     """Remove radial quaternion velocity without changing the spline workflow."""
-    result = field.clone()
+    replacements = []
     for quat_slice in _valid_quaternion_slices(field.shape[-1], quaternion_slices):
         quaternion = torch.nn.functional.normalize(current_pose[..., quat_slice], dim=-1)
-        derivative = result[..., quat_slice]
-        result[..., quat_slice] = derivative - quaternion * (quaternion * derivative).sum(
-            dim=-1, keepdim=True
-        )
-    return result
+        derivative = field[..., quat_slice]
+        tangent = derivative - quaternion * (quaternion * derivative).sum(dim=-1, keepdim=True)
+        replacements.append((quat_slice, tangent))
+    return _replace_channel_slices(field, replacements) if replacements else field
 
 
 def field_to_robocasa_action(

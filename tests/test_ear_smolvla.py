@@ -408,6 +408,13 @@ def test_libero_rotation_and_action_mapping():
     assert action.abs().max() <= 1
 
 
+def test_quaternion_spline_decode_backward_has_no_inplace_version_error():
+    spline = QuadraticSpline(segments=6, samples=16, quaternion_slices=(slice(3, 7),))
+    params = torch.randn(4, 8, 8, requires_grad=True)
+    spline.decode(params).square().mean().backward()
+    assert params.grad is not None and torch.isfinite(params.grad).all()
+
+
 def test_libero_hdf5_sampler_reads_official_layout(tmp_path):
     h5py = pytest.importorskip("h5py")
     path = tmp_path / "pick_up_mug_demo.hdf5"
