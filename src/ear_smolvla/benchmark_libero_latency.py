@@ -140,7 +140,7 @@ def main() -> None:
             gripper = policy.model.action_spline.evaluate(params, phase)[
                 ..., policy.model.pose_dim : policy.model.pose_dim + 1
             ]
-            action = policy.model._field_to_action(
+            action = policy._field_to_action(
                 field,
                 pose,
                 gripper,
