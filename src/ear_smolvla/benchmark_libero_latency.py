@@ -210,6 +210,8 @@ def main() -> None:
         "warmup": args.warmup,
         "repeats": args.repeats,
         "vlm_calls_per_plan": 1,
+        "ear_layers": policy.config.spline_reasoner_layers,
+        "action_expert_layers": policy.config.action_expert_layers,
         "ear_mc_samples": policy.config.mc_samples,
         "execution_steps": execution_steps,
         "control_hz": policy.config.dataset_fps,
