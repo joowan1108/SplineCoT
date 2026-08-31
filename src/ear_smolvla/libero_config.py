@@ -62,6 +62,19 @@ class LIBEROConfig(EARSmolVLAConfig):
             raise ValueError("n_action_steps cannot exceed action_horizon")
         if self.mc_samples < 2:
             raise ValueError("At least two Monte Carlo samples are required")
+        if (
+            any(value < 0 for value in self.guidance_mask_ratios)
+            or abs(sum(self.guidance_mask_ratios) - 1) >= 1e-6
+        ):
+            raise ValueError("guidance_mask_ratios must be nonnegative and sum to one")
+        if not 0 <= self.predicted_guidance_start_fraction < self.predicted_guidance_full_fraction <= 1:
+            raise ValueError("predicted guidance schedule must satisfy 0 <= start < full <= 1")
+        if not 0 <= self.partial_guidance_min_confidence <= self.partial_guidance_max_confidence <= 1:
+            raise ValueError("partial guidance confidence range must lie in [0, 1]")
+        if min(self.spline_translation_scale, self.spline_rotation_scale, self.spline_gripper_scale) <= 0:
+            raise ValueError("spline channel scales must be positive")
+        if self.trajectory_reconstruction_weight < 0:
+            raise ValueError("trajectory_reconstruction_weight must be nonnegative")
         if self.quantize_language_base_int8 and not self.load_vlm_weights:
             raise ValueError("INT8 language loading requires pretrained weights")
         if self.training_kv_cache:

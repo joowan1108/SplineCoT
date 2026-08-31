@@ -11,8 +11,8 @@ three images + full instruction + current state
                            /             \
                  EAR spline flow      action spline flow
                        |                    ^
-         exact fitted EAR target            |
-                       +-- overlap selection + random learned-NULL mask
+       exact / soft teacher / inferred EAR  |
+                       +-- overlap selection + stop-gradient guidance
 ```
 
 - `processor.py`: builds full-instruction FAST tokens, 64-point EAR targets,
@@ -36,7 +36,7 @@ keep overlapping segments only
                     |
 [E1.start, E1.handle, E1.end, E2.start, E2.handle, E2.end]
                     |
-uncertain -> learned NULL; padding -> excluded
+confidence softly scales each selected control; padding -> excluded
                     |
 8 phase-encoded action free-parameter queries cross-attend to all selected controls
 ```
@@ -44,7 +44,7 @@ uncertain -> learned NULL; padding -> excluded
 The attention dimensions are hidden-space projections of 15D spline control
 vectors. Support endpoints and the three local parameter roles are embedded
 before learned multi-head Q/K/V attention. Confidence contributes a log-score
-bias only for available guidance.
+bias, scales each value, and gates the total guidance residual.
 
 ## Inference
 
@@ -53,18 +53,20 @@ control worker, 20 Hz                 background planning worker
 
 latest pose                           submitted observation
     |                                      |
-closest point on Active spline             VLM
+closest point on Active spline             VLM (one call)
     |                                      |
-tangent + attraction field                 batched MC EAR samples
+tangent + attraction field                 shared-context MC EAR samples
     |                                      |
 12D robot action                           mean/covariance -> time variance
                                            |
-                                overlap + confidence-to-NULL gating
+                                overlap + soft-confidence weighting
                                            |
                                    Pending action spline
 
-             Pending ready after >=4 ticks -> hard C1 anchor -> Active
+             Pending ready after >=4 ticks -> Active
 ```
 
 The control path does not call the VLM. It only evaluates the small quadratic
-spline field from the latest measured state.
+spline field from the latest measured state. The current pose is conditioned
+as the first spline parameter during both training and inference; no generated
+handle is overwritten after sampling.

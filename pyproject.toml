@@ -27,6 +27,7 @@ ear-train = "ear_smolvla.train:main"
 ear-memory-smoke = "ear_smolvla.memory_smoke:main"
 ear-train-libero = "ear_smolvla.train_libero:main"
 ear-eval-libero = "ear_smolvla.eval_libero:main"
+ear-benchmark-libero-latency = "ear_smolvla.benchmark_libero_latency:main"
 ear-summarize-libero = "ear_smolvla.summarize_libero:main"
 ear-visualize-libero-splines = "ear_smolvla.visualize_libero_splines:main"
 

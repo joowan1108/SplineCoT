@@ -10,22 +10,32 @@ import numpy as np
 import torch
 
 from .eval_libero import to_device
-from .libero import EAR_SPLINE_TARGET, LIBEROBatchProcessor, LIBEROPolicy
+from .libero import (
+    ACTION_SPLINE_TARGET,
+    EAR_SPLINE_TARGET,
+    LIBEROBatchProcessor,
+    LIBEROPolicy,
+)
 from .train_libero import LIBEROHDF5Sampler
 
 TOP_VIEW_STYLES = {
-    "Ground-truth spline": {"color": "#000000", "linestyle": "-", "marker": "o"},
-    "EAR spline": {"color": "#0072B2", "linestyle": "--", "marker": "s"},
-    "Action-head spline": {"color": "#D55E00", "linestyle": "-.", "marker": "^"},
+    "EAR ground truth": {"color": "#000000", "linestyle": "-", "marker": "o"},
+    "EAR prediction": {"color": "#0072B2", "linestyle": "--", "marker": "s"},
+    "Action ground truth": {"color": "#009E73", "linestyle": ":", "marker": "D"},
+    "Action prediction": {"color": "#D55E00", "linestyle": "-.", "marker": "^"},
 }
 
 
 def save_top_view(
     path: Path,
     task: str,
-    ground_truth: np.ndarray,
+    ear_ground_truth: np.ndarray,
+    action_ground_truth: np.ndarray,
     ear: np.ndarray,
     action: np.ndarray,
+    ear_samples: list[np.ndarray],
+    confidence: np.ndarray,
+    available: np.ndarray,
     fps: float,
 ) -> None:
     import matplotlib
@@ -35,10 +45,20 @@ def save_top_view(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     figure, axis = plt.subplots(figsize=(7, 7))
+    for index, trajectory in enumerate(ear_samples):
+        axis.plot(
+            trajectory[:, 0],
+            trajectory[:, 1],
+            color="#56B4E9",
+            alpha=0.25,
+            linewidth=1,
+            label="Individual MC EAR samples" if index == 0 else None,
+        )
     series = (
-        ("Ground-truth spline", ground_truth),
-        ("EAR spline", ear),
-        ("Action-head spline", action),
+        ("EAR ground truth", ear_ground_truth),
+        ("EAR prediction", ear),
+        ("Action ground truth", action_ground_truth),
+        ("Action prediction", action),
     )
     for label, trajectory in series:
         style = TOP_VIEW_STYLES[label]
@@ -53,15 +73,25 @@ def save_top_view(
             **style,
         )
     axis.scatter(
-        ground_truth[0, 0],
-        ground_truth[0, 1],
-        color="#009E73",
+        ear_ground_truth[0, 0],
+        ear_ground_truth[0, 1],
+        color="#CC79A7",
         marker="*",
         s=180,
         label="Current EEF",
         zorder=5,
     )
     axis.set(title=task, xlabel="EEF x (m)", ylabel="EEF y (m)")
+    axis.text(
+        0.99,
+        0.01,
+        f"EAR confidence mean={confidence.mean():.3f}\navailable={available.sum()}/{len(available)}",
+        transform=axis.transAxes,
+        horizontalalignment="right",
+        verticalalignment="bottom",
+        fontsize=9,
+        bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"},
+    )
     axis.axis("equal")
     axis.grid(alpha=0.3)
     axis.legend()
@@ -79,9 +109,7 @@ def main() -> None:
     parser.add_argument("--task-contains")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument(
-        "--rotate-images-180", action=argparse.BooleanOptionalAction, default=True
-    )
+    parser.add_argument("--rotate-images-180", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     if args.samples < 1:
         parser.error("--samples must be positive")
@@ -117,20 +145,31 @@ def main() -> None:
             batch = to_device(processor(raw, training=True), device)
             with torch.no_grad():
                 plan = policy.model.plan(*policy._planning_inputs(batch))
-                plan = policy._anchor(plan, batch)
-                ground_truth_params = policy.model.ear_spline.fit(batch[EAR_SPLINE_TARGET])
-                ground_truth = policy.model.ear_spline.decode(ground_truth_params)
+                ear_ground_truth = policy.model.ear_spline.decode(
+                    policy.model.ear_spline.fit(batch[EAR_SPLINE_TARGET], constrain_start=True)
+                )
+                action_ground_truth = policy.model.action_spline.decode(
+                    policy.model.action_spline.fit(batch[ACTION_SPLINE_TARGET], constrain_start=True)
+                )
                 ear = policy.model.ear_spline.decode(plan.ear.mean)
                 action = policy.model.action_spline.decode(plan.params)
+                ear_samples = [
+                    policy.model.ear_spline.decode(sample)[0, :, :3].float().cpu().numpy()
+                    for sample in plan.ear.samples
+                ]
 
             name = re.sub(r"[^a-zA-Z0-9_-]+", "_", task).strip("_")[:80]
             path = args.output / f"sample-{index:02d}-{name}.png"
             save_top_view(
                 path,
                 task,
-                ground_truth[0, :, :3].float().cpu().numpy(),
+                ear_ground_truth[0, :, :3].float().cpu().numpy(),
+                action_ground_truth[0, :, :3].float().cpu().numpy(),
                 ear[0, :, :3].float().cpu().numpy(),
                 action[0, :, :3].float().cpu().numpy(),
+                ear_samples,
+                plan.ear.segment_confidence[0].float().cpu().numpy(),
+                plan.ear.segment_available[0].cpu().numpy(),
                 policy.config.dataset_fps,
             )
             print(path)

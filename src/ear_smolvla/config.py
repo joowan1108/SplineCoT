@@ -66,14 +66,23 @@ class EARSmolVLAConfig:
     detach_expert_context: bool = True
     detach_action_guidance: bool = True
 
-    # Training always teacher-forces the exact EAR target. These are the
-    # no-mask, random-span-mask, and all-null batch probabilities.
+    # Final exact / soft-teacher / inferred guidance probabilities. Training
+    # starts at 1:1:0 and continuously reaches this mixture.
     guidance_mask_ratios: tuple[float, float, float] = (1 / 3, 1 / 3, 1 / 3)
+    predicted_guidance_start_fraction: float = 0.1
+    predicted_guidance_full_fraction: float = 0.5
+    partial_guidance_min_confidence: float = 0.1
+    partial_guidance_max_confidence: float = 0.7
 
-    # Monte Carlo uncertainty is inference-only and runs in the pending planner.
+    # Put translation, quaternion, and gripper channels on comparable scales
+    # before flow matching and uncertainty estimation.
+    spline_translation_scale: float = 0.25
+    spline_rotation_scale: float = 1.0
+    spline_gripper_scale: float = 1.0
+    trajectory_reconstruction_weight: float = 1.0
+
+    # Conditional Monte Carlo uncertainty shares one VLM representation.
     mc_samples: int = 4
-    mc_image_noise_std: float = 0.01
-    mc_state_noise_std: float = 0.01
     confidence_temperature: float = 0.01
     confidence_variance_threshold: float = 0.05
 
@@ -105,7 +114,24 @@ class EARSmolVLAConfig:
 
     @property
     def action_phase_span(self) -> float:
-        return min(1.0, self.action_horizon / self.ear_horizon)
+        return min(1.0, (self.action_horizon - 1) / (self.ear_horizon - 1))
+
+    def guidance_probabilities(self, progress: float) -> tuple[float, float, float]:
+        if not 0 <= progress <= 1:
+            raise ValueError("training progress must lie in [0, 1]")
+        if progress <= self.predicted_guidance_start_fraction:
+            blend = 0.0
+        elif progress >= self.predicted_guidance_full_fraction:
+            blend = 1.0
+        else:
+            blend = (progress - self.predicted_guidance_start_fraction) / (
+                self.predicted_guidance_full_fraction - self.predicted_guidance_start_fraction
+            )
+        initial = (0.5, 0.5, 0.0)
+        return tuple(
+            (1 - blend) * start + blend * end
+            for start, end in zip(initial, self.guidance_mask_ratios, strict=True)
+        )
 
     def __post_init__(self) -> None:
         if self.num_vlm_layers != 16:
@@ -128,10 +154,26 @@ class EARSmolVLAConfig:
             raise ValueError("EAR horizon must be broader than the final action horizon")
         if self.mc_samples < 2:
             raise ValueError("At least two Monte Carlo samples are required for variance")
-        if any(value < 0 for value in self.guidance_mask_ratios) or abs(
-            sum(self.guidance_mask_ratios) - 1
-        ) >= 1e-6:
+        if (
+            any(value < 0 for value in self.guidance_mask_ratios)
+            or abs(sum(self.guidance_mask_ratios) - 1) >= 1e-6
+        ):
             raise ValueError("guidance_mask_ratios must be nonnegative and sum to one")
+        if not 0 <= self.predicted_guidance_start_fraction < self.predicted_guidance_full_fraction <= 1:
+            raise ValueError("predicted guidance schedule must satisfy 0 <= start < full <= 1")
+        if not 0 <= self.partial_guidance_min_confidence <= self.partial_guidance_max_confidence <= 1:
+            raise ValueError("partial guidance confidence range must lie in [0, 1]")
+        if (
+            min(
+                self.spline_translation_scale,
+                self.spline_rotation_scale,
+                self.spline_gripper_scale,
+            )
+            <= 0
+        ):
+            raise ValueError("spline channel scales must be positive")
+        if self.trajectory_reconstruction_weight < 0:
+            raise ValueError("trajectory_reconstruction_weight must be nonnegative")
         if self.quantize_language_base_int8 and not self.load_vlm_weights:
             raise ValueError("INT8 quantization requires pretrained VLM weights")
         if self.training_kv_cache:
@@ -147,8 +189,11 @@ class EARSmolVLAConfig:
         (path / "config.json").write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
 
     @classmethod
-    def load(cls, directory: str | Path) -> "EARSmolVLAConfig":
+    def load(cls, directory: str | Path) -> EARSmolVLAConfig:
         data = json.loads((Path(directory) / "config.json").read_text(encoding="utf-8"))
+        # Compatibility with checkpoints saved before conditional MC reused one VLM context.
+        data.pop("mc_image_noise_std", None)
+        data.pop("mc_state_noise_std", None)
         for key in (
             "image_keys",
             "resize_imgs_with_padding",

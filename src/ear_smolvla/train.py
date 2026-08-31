@@ -94,7 +94,7 @@ def main() -> None:
         raw = _to_device(torch.load(batch_file, weights_only=True), device)
         batch = processor(raw, training=True)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss, metrics = policy(batch)
+            loss, metrics = policy(batch, guidance_progress=step / max(1, args.steps - 1))
             (loss / args.gradient_accumulation).backward()
         if (step + 1) % args.gradient_accumulation == 0:
             torch.nn.utils.clip_grad_norm_(policy.get_optim_params(), config.optimizer_grad_clip_norm)

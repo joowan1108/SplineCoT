@@ -10,11 +10,11 @@ quadratic splines should make parameter-level comparison direct, reduce
 handoff discontinuity, and preserve Spline Policy's local perturbation
 recovery in the action actually executed by the robot.
 
-The central novelty is uncertainty-gated parameter attention. The action
+The central novelty is uncertainty-weighted parameter attention. The action
 expert receives only EAR segments whose temporal support overlaps its current
 short horizon. Each selected segment remains three separate control-parameter
-vectors, and Monte Carlo trajectory uncertainty determines whether those
-vectors are visible as guidance or replaced by a learned NULL representation.
+vectors, and Monte Carlo trajectory uncertainty continuously scales how
+strongly those vectors guide the action expert.
 
 ## Backbone and gradient ownership
 
@@ -73,7 +73,7 @@ which future intervals are reliable enough to guide the action expert.
 
 The action expert is a 16-layer flow-matching transformer. It predicts eight
 free vectors, which decode to a six-segment C1 spline covering the next 16
-real control ticks, or 0.8 seconds at 20 Hz. Normally four actions, or 0.2
+real control ticks, or 0.75 seconds between endpoints at 20 Hz. Normally four actions, or 0.2
 seconds, are executed before a ready pending plan may replace it.
 
 Each action parameter query first self-attends with the other action
@@ -84,42 +84,40 @@ end vectors are separate keys and values with temporal-support and local-role
 embeddings; they are not pooled into a segment token and are not decoded into
 action points before attention.
 
-## Teacher-forced stabilization
+## Continuous teacher-forced stabilization
 
-During training, guidance always comes from the spline fitted to the exact
-demonstration trajectory. Predicted EAR output is never substituted into the
-action branch during the initial model training. Each batch item independently
-uses one of three equally likely guidance conditions:
+Training begins with a 1:1 mixture of exact EAR guidance and exact EAR guidance
+whose confidence is reduced over a contiguous half of the selected segments.
+No spline parameter is deleted or modified. From 10% to 50% of the training
+run, the inferred-EAR probability increases linearly from zero to one third;
+the final mixture is exact, soft teacher, and inferred EAR at 1:1:1.
 
-1. all overlapping EAR parameters visible;
-2. a random contiguous span replaced by learned NULL guidance;
-3. all overlapping EAR parameters replaced by learned NULL guidance.
-
-The three conditions are mixed 1:1:1. NULL is a learned embedding rather than
-a numeric zero, so the action expert can distinguish missing guidance from a
-valid parameter whose value happens to be zero.
+The inferred branch uses the same four-sample Monte Carlo mean and trajectory
+uncertainty as rollout inference and remains stop-gradient. Confidence adds a
+relative attention-logit bias, scales each EAR value, and gates the total
+guidance residual. There is no learned NULL representation or hard masking of
+selected EAR parameters; only batch padding is excluded.
 
 ## Monte Carlo uncertainty gating
 
-Uncertainty gating is used only during inference planning. Several perturbed
-versions of the current images and robot state are batched together and passed
-through the EAR with independent flow initial noise. Their predicted spline
-parameters form Monte Carlo samples. The sample mean is the candidate EAR
-spline and the unbiased sample covariance is propagated through the fixed
-spline basis to obtain trajectory variance at the 64 query times.
+The images, instruction, and current robot state are passed through the VLM
+once. Its representation is shared across several EAR samples, each generated
+from independent flow initial noise. Their predicted spline parameters form
+conditional Monte Carlo samples. The sample mean is the candidate EAR spline
+and the unbiased sample covariance is propagated through the fixed spline
+basis to obtain trajectory variance at the 64 query times.
 
 Each EAR segment receives the maximum mean channel variance within its
-temporal support. A configurable variance threshold creates the hard
-confidence mask; an exponential confidence value also biases attention among
-the surviving parameters. An uncertain selected segment is retained in the
-temporal layout but its three parameter values are replaced by learned NULL
-guidance. If every overlapping segment is uncertain, the action expert runs
-with all-NULL EAR guidance rather than using an unreliable reference.
+temporal support. An exponential confidence value biases attention toward
+reliable parameters and scales both their values and the resulting guidance
+residual. If every overlapping segment has low confidence, EAR influence
+smoothly approaches zero without deleting or changing the spline parameters.
+A configurable variance threshold is retained only as a diagnostic metric.
 
-Because both observation perturbation and independent flow initialization are
-sampled, the reported variance is total predictive sensitivity rather than a
-pure decomposition of epistemic and aleatoric uncertainty. Separate ablations
-may hold either source fixed.
+The reported variance measures the spread of the learned conditional EAR
+distribution for one fixed observation. It does not measure sensitivity to
+image or state perturbations; calibration must therefore compare this variance
+against held-out spline error.
 
 ## Closed-loop execution and asynchronous planning
 
@@ -130,18 +128,17 @@ This field recomputation is the source of local correction and perturbation
 recovery; it does not require a VLM forward pass.
 
 At the same time, one background planning worker consumes the latest submitted
-observation, computes the VLM context, batched Monte Carlo EAR distribution,
+observation, computes one VLM context, batched conditional Monte Carlo EAR distribution,
 overlapping confidence-gated guidance, and a Pending action spline. After at
 least four active ticks, a completed Pending spline can be committed. If it is
 not ready, the Active spline continues; after its nominal horizon, tangent
 progression is disabled so the field safely attracts toward the endpoint.
 
-The action spline's internal boundaries are C1 by construction. At each
-Active-to-Pending handoff, its first free parameter is replaced by the latest
-measured 15D state and its second is chosen from the current 15D velocity and
-first segment duration. This hard anchor makes position and first derivative
-continuous at the actual commit time. Discrete control-mode changes and
-gripper semantics remain outside the geometric C1 guarantee.
+The action spline's internal boundaries are C1 by construction. Its first
+free parameter is conditioned on the measured pose used to create the plan;
+no post-sampling parameter overwrite distorts the generated spline. Continuity
+between an asynchronously generated Pending spline and the later measured pose
+at commit time is not guaranteed and remains an evaluation target.
 
 ## Data and fixed target construction
 
@@ -156,10 +153,11 @@ For every valid trajectory suffix:
 - the next 16 original ticks form the action target, with endpoint repetition
   only for a shorter valid suffix;
 - the continuous normalized gripper channel is appended;
-- a fixed least-squares pseudoinverse maps each target trajectory to its exact
-  K+2 free spline parameters;
-- flow-matching noise is added to these parameters for the corresponding
-  expert loss.
+- a start-conditioned least-squares fit fixes the first spline parameter to
+  the measured pose and solves the remaining K+1 parameters;
+- translation, quaternion, and gripper channels are scaled before flow noise;
+- parameter-flow loss is combined with decoded dense-trajectory loss;
+- the measured start pose remains inpainted throughout training and inference.
 
 ## Evaluation
 
@@ -168,7 +166,7 @@ uncertainty-gated EAR attention, decoded-point guidance, and a non-spline
 action expert. Measurements include task success, contact-stage success,
 perturbation recovery and recovery time, false progression after failed
 grasps, active-to-pending velocity jump, trajectory jerk, uncertainty
-calibration, fraction of NULL guidance, planning p50/p95/p99 latency, control
+calibration, effective guidance strength, planning p50/p95/p99 latency, control
 tick latency, peak VRAM, and training throughput.
 
 The asynchronous design removes VLM inference from the hard 20 Hz control

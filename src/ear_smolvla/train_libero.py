@@ -41,11 +41,7 @@ class LIBEROHDF5Sampler:
         self.rotate_images_180 = rotate_images_180
         self.random = random.Random(seed)
         self.handles = {}
-        paths = (
-            [root]
-            if root.is_file()
-            else sorted({*root.rglob("*.hdf5"), *root.rglob("*.h5")})
-        )
+        paths = [root] if root.is_file() else sorted({*root.rglob("*.hdf5"), *root.rglob("*.h5")})
         self.entries = []
         for path in paths:
             with h5py.File(path, "r") as file:
@@ -132,6 +128,13 @@ def _to_device(value, device: torch.device):
     return value
 
 
+def _first_batch(batch: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value[:1] if isinstance(value, torch.Tensor) and value.ndim else value
+        for key, value in batch.items()
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=Path, required=True, help="LIBERO HDF5 root")
@@ -140,6 +143,12 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation", type=int, default=16)
     parser.add_argument("--num-checkpoints", type=int, default=3)
+    parser.add_argument(
+        "--sample-metrics-every",
+        type=int,
+        default=10_000,
+        help="Run full 10-step EAR/action sampling on one training example; 0 disables it",
+    )
     parser.add_argument("--stats", type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--seed", type=int, default=0)
@@ -150,6 +159,8 @@ def main() -> None:
         help="Correct the official HDF5 camera convention",
     )
     args = parser.parse_args()
+    if args.sample_metrics_every < 0:
+        parser.error("--sample-metrics-every must be nonnegative")
     if not torch.cuda.is_available():
         raise RuntimeError("LIBERO training requires a CUDA GPU")
     save_steps = checkpoint_steps(args.steps, args.gradient_accumulation, args.num_checkpoints)
@@ -157,10 +168,10 @@ def main() -> None:
     torch.manual_seed(args.seed)
     config = LIBEROConfig()
     policy = (
-        LIBEROPolicy.from_pretrained(args.checkpoint)
-        if args.checkpoint
-        else LIBEROPolicy(config)
-    ).train().to("cuda")
+        (LIBEROPolicy.from_pretrained(args.checkpoint) if args.checkpoint else LIBEROPolicy(config))
+        .train()
+        .to("cuda")
+    )
     config = policy.config
     language_trainable = [
         name
@@ -169,10 +180,7 @@ def main() -> None:
     ]
     if language_trainable:
         raise RuntimeError(f"Language parameters unexpectedly trainable: {language_trainable[:4]}")
-    if not all(
-        parameter.requires_grad
-        for parameter in policy.model._vlm_model().vision_model.parameters()
-    ):
+    if not all(parameter.requires_grad for parameter in policy.model._vlm_model().vision_model.parameters()):
         raise RuntimeError("The full LIBERO vision encoder is not trainable")
 
     if args.checkpoint and not args.stats:
@@ -181,16 +189,10 @@ def main() -> None:
         )
     else:
         stats = torch.load(args.stats, weights_only=True) if args.stats else None
-        processor = LIBEROBatchProcessor(
-            config, tokenizer=policy.model.tokenizer, stats=stats
-        )
+        processor = LIBEROBatchProcessor(config, tokenizer=policy.model.tokenizer, stats=stats)
     vision = list(policy.model._vlm_model().vision_model.parameters())
     vision_ids = {id(parameter) for parameter in vision}
-    other = [
-        parameter
-        for parameter in policy.get_optim_params()
-        if id(parameter) not in vision_ids
-    ]
+    other = [parameter for parameter in policy.get_optim_params() if id(parameter) not in vision_ids]
     optimizer = torch.optim.AdamW(
         [
             {"params": vision, "lr": config.vision_encoder_lr},
@@ -213,24 +215,25 @@ def main() -> None:
             raw = _to_device(sampler.sample_batch(args.batch_size), device)
             batch = processor(raw, training=True)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss, metrics = policy(batch)
+                loss, metrics = policy(batch, guidance_progress=step / max(1, args.steps - 1))
                 (loss / args.gradient_accumulation).backward()
             if (step + 1) % args.gradient_accumulation == 0:
-                torch.nn.utils.clip_grad_norm_(
-                    policy.get_optim_params(), config.optimizer_grad_clip_norm
-                )
+                torch.nn.utils.clip_grad_norm_(policy.get_optim_params(), config.optimizer_grad_clip_norm)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
             if step % 10 == 0:
                 print({"step": step, **metrics})
+            if args.sample_metrics_every and (step + 1) % args.sample_metrics_every == 0:
+                policy.eval()
+                sampled_metrics = policy.sampled_inference_metrics(_first_batch(batch))
+                policy.train()
+                print({"step": step + 1, **sampled_metrics})
             if step + 1 in save_steps:
                 checkpoint = args.output / f"checkpoint-{step + 1}"
                 policy.save_pretrained(checkpoint)
                 processor.save(checkpoint / "processor")
         if args.steps % args.gradient_accumulation:
-            torch.nn.utils.clip_grad_norm_(
-                policy.get_optim_params(), config.optimizer_grad_clip_norm
-            )
+            torch.nn.utils.clip_grad_norm_(policy.get_optim_params(), config.optimizer_grad_clip_norm)
             optimizer.step()
     finally:
         sampler.close()

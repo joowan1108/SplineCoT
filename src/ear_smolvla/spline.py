@@ -12,9 +12,7 @@ EE_QUAT = slice(10, 14)
 POSE_DIM = 14
 
 
-def _valid_quaternion_slices(
-    dimension: int, quaternion_slices: tuple[slice, ...]
-) -> tuple[slice, ...]:
+def _valid_quaternion_slices(dimension: int, quaternion_slices: tuple[slice, ...]) -> tuple[slice, ...]:
     return tuple(item for item in quaternion_slices if item.stop is not None and item.stop <= dimension)
 
 
@@ -41,9 +39,7 @@ def normalize_pose_quaternions(
 ) -> Tensor:
     result = poses.clone()
     for quat_slice in _valid_quaternion_slices(poses.shape[-1], quaternion_slices):
-        result[..., quat_slice] = torch.nn.functional.normalize(
-            result[..., quat_slice], dim=-1, eps=eps
-        )
+        result[..., quat_slice] = torch.nn.functional.normalize(result[..., quat_slice], dim=-1, eps=eps)
     return result
 
 
@@ -62,16 +58,14 @@ class ParameterGuidance:
     tokens: Tensor  # [B,G,D]
     support: Tensor  # [B,G,2], global EAR phase
     valid: Tensor  # [B,G], selected token rather than batch padding
-    available: Tensor  # [B,G], False means learned NULL guidance
     confidence: Tensor  # [B,G]
     role: Tensor  # [B,G], local start/handle/end role
 
-    def detached(self) -> "ParameterGuidance":
+    def detached(self) -> ParameterGuidance:
         return ParameterGuidance(
             self.tokens.detach(),
             self.support.detach(),
             self.valid.detach(),
-            self.available.detach(),
             self.confidence.detach(),
             self.role.detach(),
         )
@@ -97,6 +91,11 @@ class QuadraticSpline(nn.Module):
         basis = self._basis(torch.linspace(0, 1, samples, dtype=torch.float64))
         self.register_buffer("sample_basis", basis.float(), persistent=False)
         self.register_buffer("fit_matrix", torch.linalg.pinv(basis).float(), persistent=False)
+        self.register_buffer(
+            "start_conditioned_fit_matrix",
+            torch.linalg.pinv(basis[:, 1:]).float(),
+            persistent=False,
+        )
 
     def _basis(self, phase: Tensor) -> Tensor:
         columns = self.segments + 2
@@ -130,13 +129,21 @@ class QuadraticSpline(nn.Module):
         weights = torch.stack([(1 - local) ** 2, 2 * (1 - local) * local, local**2], dim=-1)
         return torch.einsum("...tpd,tp->...td", selected, weights)
 
-    def fit(self, trajectory: Tensor) -> Tensor:
+    def fit(self, trajectory: Tensor, *, constrain_start: bool = False) -> Tensor:
         if trajectory.shape[-2] != self.samples:
             raise ValueError(f"expected {self.samples} samples, got {trajectory.shape[-2]}")
         if self.quaternion_slices:
-            trajectory = make_quaternion_signs_continuous(
-                trajectory, self.quaternion_slices
+            trajectory = make_quaternion_signs_continuous(trajectory, self.quaternion_slices)
+        if constrain_start:
+            start = trajectory[..., :1, :]
+            basis = self.sample_basis.to(trajectory)
+            residual = trajectory - basis[:, :1] * start
+            tail = torch.einsum(
+                "ph,...hd->...pd",
+                self.start_conditioned_fit_matrix.to(trajectory),
+                residual,
             )
+            return torch.cat([start, tail], dim=-2)
         return torch.einsum("ph,...hd->...pd", self.fit_matrix, trajectory)
 
     def decode(self, params: Tensor, samples: int | None = None) -> Tensor:
@@ -160,8 +167,8 @@ class QuadraticSpline(nn.Module):
         segment = scaled.floor().long().clamp_max(self.segments - 1)
         local = torch.where(phase >= 1, torch.ones_like(phase), scaled - segment.to(phase.dtype))
         gather = segment[..., None, None].expand(*segment.shape, 1, controls.shape[-2] * controls.shape[-1])
-        selected = controls.flatten(-2).gather(-2, gather).squeeze(-2).reshape(
-            *segment.shape, 3, controls.shape[-1]
+        selected = (
+            controls.flatten(-2).gather(-2, gather).squeeze(-2).reshape(*segment.shape, 3, controls.shape[-1])
         )
         weights = torch.stack([(1 - local) ** 2, 2 * (1 - local) * local, local**2], dim=-1)
         value = torch.einsum("...p,...pd->...d", weights, selected)
@@ -170,15 +177,6 @@ class QuadraticSpline(nn.Module):
             if self.quaternion_slices
             else value
         )
-
-    def constrain_start(
-        self, params: Tensor, start: Tensor, velocity: Tensor, segment_duration: float
-    ) -> Tensor:
-        """Hard C0/C1 handoff: start at the measured state with the current velocity."""
-        result = params.clone()
-        result[..., 0, :] = start
-        result[..., 1, :] = start + 0.5 * segment_duration * velocity
-        return result
 
     def endpoint_derivatives(self, params: Tensor) -> tuple[Tensor, Tensor]:
         controls = self.segment_controls(params)
@@ -241,7 +239,6 @@ class QuadraticSpline(nn.Module):
         phase: Tensor,
         phase_span: float,
         segment_confidence: Tensor | None = None,
-        segment_available: Tensor | None = None,
     ) -> ParameterGuidance:
         """Pack only overlapping segments, then expose each of their three parameters."""
         batch, _, dimension = params.shape
@@ -255,7 +252,6 @@ class QuadraticSpline(nn.Module):
         tokens = params.new_zeros(batch, max_tokens, dimension)
         support = params.new_zeros(batch, max_tokens, 2)
         valid = torch.zeros(batch, max_tokens, dtype=torch.bool, device=params.device)
-        available = torch.zeros(batch, max_tokens, dtype=torch.bool, device=params.device)
         confidence = params.new_ones(batch, max_tokens)
         role = torch.zeros(batch, max_tokens, dtype=torch.long, device=params.device)
         for row in range(batch):
@@ -268,13 +264,10 @@ class QuadraticSpline(nn.Module):
             intervals = torch.stack([starts[indices], ends[indices]], dim=-1)
             support[row, :count] = intervals[:, None].expand(-1, 3, -1).reshape(-1, 2)
             valid[row, :count] = True
-            available[row, :count] = True
             role[row, :count] = torch.arange(3, device=params.device).repeat(len(indices))
             if segment_confidence is not None:
                 confidence[row, :count] = segment_confidence[row, indices, None].expand(-1, 3).reshape(-1)
-            if segment_available is not None:
-                available[row, :count] &= segment_available[row, indices, None].expand(-1, 3).reshape(-1)
-        return ParameterGuidance(tokens, support, valid, available, confidence, role)
+        return ParameterGuidance(tokens, support, valid, confidence, role)
 
     def propagate_parameter_covariance(self, parameter_samples: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Monte Carlo parameter moments and Eq. 11 trajectory marginal variance.
@@ -286,9 +279,7 @@ class QuadraticSpline(nn.Module):
             raise ValueError("parameter_samples must have shape [S>=2,B,P,D]")
         if self.quaternion_slices:
             parameter_samples = parameter_samples.clone()
-            for quat_slice in _valid_quaternion_slices(
-                parameter_samples.shape[-1], self.quaternion_slices
-            ):
+            for quat_slice in _valid_quaternion_slices(parameter_samples.shape[-1], self.quaternion_slices):
                 reference = parameter_samples[:1, ..., quat_slice]
                 dot = (parameter_samples[..., quat_slice] * reference).sum(dim=(-1, -2))
                 sign = torch.where(dot < 0, -torch.ones_like(dot), torch.ones_like(dot))
@@ -318,24 +309,28 @@ class QuadraticSpline(nn.Module):
         return confidence, uncertainty <= threshold
 
 
-def random_teacher_guidance_mask(
-    available: Tensor, ratios: tuple[float, float, float], modes: Tensor | None = None
+def soften_partial_guidance(
+    confidence: Tensor,
+    valid: Tensor,
+    partial_rows: Tensor,
+    minimum: float,
+    maximum: float,
 ) -> Tensor:
-    """1:1:1 no-mask, random contiguous parameter span, and all-null masking."""
-    result = available.clone()
-    if modes is None:
-        probabilities = torch.tensor(ratios, device=available.device)
-        modes = torch.multinomial(probabilities, available.shape[0], replacement=True)
-    for row, mode in enumerate(modes.tolist()):
-        indices = available[row].nonzero(as_tuple=False).flatten()
-        if mode == 0 or not len(indices):
+    """Lower confidence for a contiguous half of the selected EAR segments."""
+    if partial_rows.shape != valid.shape[:1]:
+        raise ValueError("partial_rows must have shape [B]")
+    if not 0 <= minimum <= maximum <= 1:
+        raise ValueError("guidance confidence range must lie in [0, 1]")
+    result = confidence.clone()
+    for row in partial_rows.nonzero(as_tuple=False).flatten().tolist():
+        token_count = int(valid[row].sum())
+        segment_count = token_count // 3
+        if segment_count < 2:
             continue
-        if mode == 2:
-            result[row, indices] = False
-            continue
-        length = max(1, len(indices) // 2)
-        start = int(torch.randint(0, len(indices) - length + 1, (), device=available.device))
-        result[row, indices[start : start + length]] = False
+        length = max(1, segment_count // 2)
+        start = int(torch.randint(0, segment_count - length + 1, (), device=valid.device))
+        values = torch.empty(length, dtype=result.dtype, device=result.device).uniform_(minimum, maximum)
+        result[row, start * 3 : (start + length) * 3] = values.repeat_interleave(3)
     return result
 
 
@@ -363,13 +358,9 @@ def field_to_robocasa_action(
     base_angular = quaternion_component_velocity_to_angular(
         current_pose[..., BASE_QUAT], field[..., BASE_QUAT]
     )
-    ee_angular = quaternion_component_velocity_to_angular(
-        current_pose[..., EE_QUAT], field[..., EE_QUAT]
-    )
+    ee_angular = quaternion_component_velocity_to_angular(current_pose[..., EE_QUAT], field[..., EE_QUAT])
     base = torch.cat([field[..., :3], base_angular[..., 2:3]], dim=-1)
-    return torch.cat(
-        [base, control_mode, field[..., 7:10], ee_angular, gripper[..., :1]], dim=-1
-    )
+    return torch.cat([base, control_mode, field[..., 7:10], ee_angular, gripper[..., :1]], dim=-1)
 
 
 def field_to_libero_action(field: Tensor, current_pose: Tensor, gripper: Tensor) -> Tensor:

@@ -55,9 +55,11 @@ uv run ear-train \
 ```
 
 Use `vlm_warmup` first only when FAST representation pretraining is needed;
-otherwise train `joint_teacher_forced`. During joint training, exact fitted
-EAR parameters are always supplied to the action expert with per-sample
-no-mask, partial-mask, and all-NULL cases sampled at 1:1:1.
+otherwise train `joint_teacher_forced`. Joint training begins with exact and
+soft-confidence teacher EAR guidance at 1:1. Stop-gradient inferred MC-EAR
+guidance ramps from zero after 10% of training to a final exact/soft/inferred
+1:1:1 mixture at 50%. Low-confidence segments remain valid parameters but
+contribute less to attention; there is no learned NULL guidance.
 
 For inference, preprocess with `BatchProcessor(..., training=False)` and call
 `policy.select_action(batch)` every control tick. The active action spline is
@@ -82,6 +84,7 @@ uv run ear-train-libero \
   --batch-size 4 \
   --gradient-accumulation 16 \
   --num-checkpoints 3 \
+  --sample-metrics-every 10000 \
   --output outputs/libero_spatial
 ```
 
@@ -92,6 +95,8 @@ episode ends. Raw HDF5 images are rotated 180 degrees by default; pass
 `--no-rotate-images-180` if the local dataset was already corrected.
 LIBERO actions remain in their native `[-1,1]` convention; an optional stats
 file is applied only to the VLM state input.
+The trainer additionally reports full 10-step inference-sampling metrics on
+one example every `--sample-metrics-every` microsteps; pass `0` to disable it.
 
 Simulator evaluation is an optional install and does not add LeRobot:
 
@@ -104,3 +109,22 @@ MUJOCO_GL=egl uv run ear-eval-libero \
   --output results/libero_spatial.json
 uv run ear-summarize-libero results/*.json --output results/summary.csv
 ```
+
+Measure one-observation planning latency and the deployed action interval on a
+single task. Conditional EAR uncertainty uses four flow samples from one shared
+VLM representation:
+
+```bash
+MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=0 uv run ear-benchmark-libero-latency \
+  --checkpoint outputs/libero_spatial/checkpoint-160000 \
+  --suite libero_spatial \
+  --task-id 0 \
+  --warmup 5 \
+  --repeats 30 \
+  --output results/latency/libero_spatial-task-0.json
+```
+
+The default execution interval is `n_action_steps` (currently 4 ticks at
+20 Hz). Pass `--execution-steps 16` to measure simulator execution for the
+entire current action-spline horizon. The JSON separates measured simulator
+compute time from the fixed physical control duration.
