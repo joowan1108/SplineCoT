@@ -18,6 +18,7 @@ SUITE_MAX_STEPS = {
     "libero_goal": 300,
     "libero_10": 520,
 }
+VIDEO_TASKS = 3
 
 
 def xyzw_to_axis_angle(quaternion: np.ndarray) -> np.ndarray:
@@ -66,6 +67,35 @@ def task_init_states(task, get_libero_path) -> np.ndarray:
     return np.asarray(torch.load(path, map_location="cpu", weights_only=False))
 
 
+def rollout_video_path(
+    video_dir: Path | None, suite: str, task_id: int, task_name: str, episode: int
+) -> Path | None:
+    if video_dir is None or task_id >= VIDEO_TASKS or episode != 0:
+        return None
+    return video_dir / suite / f"task-{task_id:02d}-{task_name}.mp4"
+
+
+def write_video_frame(writer, observation: dict) -> None:
+    import cv2
+
+    frame = np.ascontiguousarray(observation["agentview_image"][::-1, ::-1])
+    writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+
+def open_video(path: Path, observation: dict, fps: float):
+    import cv2
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    height, width = observation["agentview_image"].shape[:2]
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open video writer for {path}")
+    write_video_frame(writer, observation)
+    return writer
+
+
 def evaluate(args: argparse.Namespace) -> dict:
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
@@ -95,17 +125,38 @@ def evaluate(args: argparse.Namespace) -> dict:
                     observation = env.set_init_state(initial_states[episode % len(initial_states)])
                     for _ in range(args.settle_steps):
                         observation, _, _, _ = env.step([0, 0, 0, 0, 0, 0, -1])
+                    video_path = rollout_video_path(
+                        args.video_dir, args.suite, task_id, task.name, episode
+                    )
+                    video = (
+                        open_video(video_path, observation, policy.config.dataset_fps)
+                        if video_path
+                        else None
+                    )
                     policy.reset()
                     success = False
                     steps = 0
                     episode_limit = args.max_steps or SUITE_MAX_STEPS[args.suite]
-                    for steps in range(1, episode_limit + 1):
-                        batch = processor(policy_input(observation, task.language), training=False)
-                        action = policy.select_action(to_device(batch, device))[0].float().cpu().numpy()
-                        observation, _, done, _ = env.step(np.clip(action, -1, 1))
-                        success = bool(env.check_success())
-                        if success or done:
-                            break
+                    try:
+                        for steps in range(1, episode_limit + 1):
+                            batch = processor(
+                                policy_input(observation, task.language), training=False
+                            )
+                            action = (
+                                policy.select_action(to_device(batch, device))[0]
+                                .float()
+                                .cpu()
+                                .numpy()
+                            )
+                            observation, _, done, _ = env.step(np.clip(action, -1, 1))
+                            if video is not None:
+                                write_video_frame(video, observation)
+                            success = bool(env.check_success())
+                            if success or done:
+                                break
+                    finally:
+                        if video is not None:
+                            video.release()
                     record = {
                         "task_id": task_id,
                         "task": task.name,
@@ -113,6 +164,8 @@ def evaluate(args: argparse.Namespace) -> dict:
                         "success": success,
                         "steps": steps,
                     }
+                    if video_path is not None:
+                        record["video"] = str(video_path)
                     episodes.append(record)
                     print(json.dumps(record))
             finally:
@@ -150,6 +203,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--video-dir", type=Path)
     args = parser.parse_args()
     if args.episodes < 1 or (args.max_steps is not None and args.max_steps < 1):
         parser.error("--episodes and --max-steps must be positive")

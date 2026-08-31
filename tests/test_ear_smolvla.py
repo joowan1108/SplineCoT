@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from ear_smolvla.config import EARSmolVLAConfig
-from ear_smolvla.eval_libero import xyzw_to_axis_angle
+from ear_smolvla.eval_libero import rollout_video_path, xyzw_to_axis_angle
 from ear_smolvla.libero import (
     LIBEROBatchProcessor,
     axis_angle_to_quaternion,
@@ -65,6 +65,12 @@ def test_libero_xyzw_quaternion_conversion():
     assert np.allclose(
         xyzw_to_axis_angle(np.array([1, 0, 0, 0])), np.array([np.pi, 0, 0]), atol=1e-6
     )
+
+
+def test_rollout_videos_only_cover_first_episode_of_first_three_tasks(tmp_path):
+    assert rollout_video_path(tmp_path, "libero_spatial", 2, "task", 0) is not None
+    assert rollout_video_path(tmp_path, "libero_spatial", 3, "task", 0) is None
+    assert rollout_video_path(tmp_path, "libero_spatial", 0, "task", 1) is None
 
 
 def test_three_checkpoints_cover_the_full_training_run():
