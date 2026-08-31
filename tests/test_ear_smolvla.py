@@ -433,6 +433,29 @@ def test_libero_hdf5_sampler_reads_official_layout(tmp_path):
     assert batch["task"] == ["pick up mug", "pick up mug"]
 
 
+def test_libero_hdf5_sampler_excludes_libero_90_by_default(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    suite = tmp_path / "libero_90"
+    suite.mkdir()
+    path = suite / "task_demo.hdf5"
+    with h5py.File(path, "w") as file:
+        data = file.create_group("data")
+        demo = data.create_group("demo_0")
+        demo.attrs["num_samples"] = 1
+        obs = demo.create_group("obs")
+        obs.create_dataset("ee_states", data=np.zeros((1, 6), dtype=np.float32))
+        obs.create_dataset("gripper_states", data=np.zeros((1, 2), dtype=np.float32))
+        obs.create_dataset("agentview_rgb", data=np.zeros((1, 2, 2, 3), dtype=np.uint8))
+        obs.create_dataset("eye_in_hand_rgb", data=np.zeros((1, 2, 2, 3), dtype=np.uint8))
+        demo.create_dataset("actions", data=np.zeros((1, 7), dtype=np.float32))
+    with pytest.raises(ValueError, match="No LIBERO demonstrations"):
+        LIBEROHDF5Sampler(tmp_path, 1, rotate_images_180=False, seed=0)
+    sampler = LIBEROHDF5Sampler(
+        tmp_path, 1, rotate_images_180=False, seed=0, include_libero_90=True
+    )
+    sampler.close()
+
+
 def test_source_has_no_subtask_or_lerobot_runtime_dependency():
     source = "\n".join(path.read_text() for path in Path("src/ear_smolvla").glob("*.py"))
     assert "subtask" not in source.lower()

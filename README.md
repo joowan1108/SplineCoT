@@ -74,19 +74,22 @@ uses two cameras, state 8, action 7, and an 8D `EEF pose7 + gripper1` spline.
 The BF16 language model and LM head are fully frozen with no language LoRA;
 FAST CE trains the complete vision encoder, connector, and state projection.
 
-Install only the small HDF5 reader extra and point the trainer at the official
-LIBERO demonstration directory:
+Download only the four suites used by the standard VLA benchmark (Spatial,
+Object, Goal, and LIBERO-10), then train on their 40 tasks. LIBERO-90 is not
+downloaded and is also excluded by the trainer unless `--include-libero-90`
+is explicitly passed:
 
 ```bash
 uv sync --extra test --extra libero
+uv run ear-download-libero --output data/libero/vla40
 uv run ear-train-libero \
-  --data /path/to/LIBERO/libero/datasets/libero_spatial \
+  --data data/libero/vla40 \
   --steps 160000 \
   --batch-size 4 \
   --gradient-accumulation 16 \
   --num-checkpoints 3 \
   --sample-metrics-every 10000 \
-  --output outputs/libero_spatial
+  --output outputs/libero_vla40_160k
 ```
 
 The reader consumes the official `data/demo_*/` HDF5 layout directly, so it

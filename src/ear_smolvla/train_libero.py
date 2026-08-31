@@ -33,7 +33,15 @@ def _task_text(path: Path, attributes) -> str:
 class LIBEROHDF5Sampler:
     """Small random-window reader for the official `data/demo_*/` layout."""
 
-    def __init__(self, root: Path, horizon: int, *, rotate_images_180: bool, seed: int):
+    def __init__(
+        self,
+        root: Path,
+        horizon: int,
+        *,
+        rotate_images_180: bool,
+        seed: int,
+        include_libero_90: bool = False,
+    ):
         import h5py
 
         self.h5py = h5py
@@ -42,6 +50,8 @@ class LIBEROHDF5Sampler:
         self.random = random.Random(seed)
         self.handles = {}
         paths = [root] if root.is_file() else sorted({*root.rglob("*.hdf5"), *root.rglob("*.h5")})
+        if not include_libero_90:
+            paths = [path for path in paths if "libero_90" not in path.parts]
         self.entries = []
         for path in paths:
             with h5py.File(path, "r") as file:
@@ -153,6 +163,11 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--include-libero-90",
+        action="store_true",
+        help="Include LIBERO-90 pretraining demonstrations; excluded by default for standard VLA evaluation",
+    )
+    parser.add_argument(
         "--rotate-images-180",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -207,6 +222,7 @@ def main() -> None:
         config.ear_horizon,
         rotate_images_180=args.rotate_images_180,
         seed=args.seed,
+        include_libero_90=args.include_libero_90,
     )
     device = torch.device("cuda")
     optimizer.zero_grad(set_to_none=True)

@@ -26,6 +26,7 @@ eval = ["libero==0.1.1", "mujoco==3.3.2"]
 ear-train = "ear_smolvla.train:main"
 ear-memory-smoke = "ear_smolvla.memory_smoke:main"
 ear-train-libero = "ear_smolvla.train_libero:main"
+ear-download-libero = "ear_smolvla.download_libero:main"
 ear-eval-libero = "ear_smolvla.eval_libero:main"
 ear-benchmark-libero-latency = "ear_smolvla.benchmark_libero_latency:main"
 ear-summarize-libero = "ear_smolvla.summarize_libero:main"
