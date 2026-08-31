@@ -50,7 +50,7 @@ def small_config() -> EARSmolVLAConfig:
 
 def test_config_is_the_locked_dual_spline_architecture():
     config = small_config()
-    assert (config.num_vlm_layers, config.action_expert_layers) == (16, 16)
+    assert (config.num_vlm_layers, config.spline_reasoner_layers, config.action_expert_layers) == (16, 16, 16)
     assert (config.ear_segments, config.ear_parameter_count, config.ear_horizon) == (14, 16, 64)
     assert (config.action_segments, config.action_parameter_count, config.action_horizon) == (6, 8, 16)
     assert config.n_action_steps == 4 and config.dataset_fps == 20

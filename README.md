@@ -10,7 +10,7 @@ for provenance and tensor conventions.
   vision LoRA, trainable connector, first 16 text layers.
 - VLM objective: FAST action-token CE only. There is no subtask decoder or
   subtask CE.
-- EAR: 8-layer flow expert producing 16 free parameters for a 14-segment C1
+- EAR: 16-layer flow expert producing 16 free parameters for a 14-segment C1
   quadratic spline over a 64-tick broad horizon.
 - Action expert: 16-layer flow expert producing 8 free parameters for a
   6-segment C1 quadratic spline over the next 16 ticks.

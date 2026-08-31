@@ -51,9 +51,9 @@ class LIBEROConfig(EARSmolVLAConfig):
         if not self.train_vision_encoder_full:
             raise ValueError("LIBERO vision encoder must be fully trainable")
         if self.num_vlm_layers != 16 or self.action_expert_layers != 16:
-            raise ValueError("LIBERO keeps the locked 16-layer VLM/action experts")
-        if self.spline_reasoner_layers not in (6, 8):
-            raise ValueError("spline_reasoner_layers must be 6 or 8")
+            raise ValueError("LIBERO keeps the locked 16-layer VLM/EAR/action experts")
+        if self.spline_reasoner_layers not in (6, 8, 16):
+            raise ValueError("LIBERO EAR spline expert must have 16 layers (6/8 are legacy checkpoints)")
         if self.expert_hidden_size % self.expert_heads:
             raise ValueError("expert_hidden_size must be divisible by expert_heads")
         if self.ear_horizon <= self.action_horizon:

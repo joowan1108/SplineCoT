@@ -55,7 +55,7 @@ class EARSmolVLAConfig:
     validate_fast_vocabulary: bool = True
     fast_max_reconstruction_rmse: float = 0.25
 
-    spline_reasoner_layers: int = 8
+    spline_reasoner_layers: int = 16
     action_expert_layers: int = 16
     expert_hidden_size: int = 768
     expert_heads: int = 12
@@ -136,8 +136,8 @@ class EARSmolVLAConfig:
     def __post_init__(self) -> None:
         if self.num_vlm_layers != 16:
             raise ValueError("EAR-SmolVLA uses the first 16 SmolVLM text layers")
-        if self.spline_reasoner_layers not in (6, 8):
-            raise ValueError("spline_reasoner_layers must be 8 or the documented 6-layer fallback")
+        if self.spline_reasoner_layers not in (6, 8, 16):
+            raise ValueError("The EAR spline expert must have 16 layers (6/8 are legacy checkpoints)")
         if self.action_expert_layers != 16:
             raise ValueError("The final action spline expert must have 16 layers")
         if self.expert_hidden_size % self.expert_heads:
