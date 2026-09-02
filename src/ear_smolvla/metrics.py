@@ -9,10 +9,24 @@ from torch import Tensor
 def spline_trajectory_errors(
     trajectory: Tensor, reference: Tensor, quaternion_slices: tuple[slice, ...]
 ) -> dict[str, Tensor]:
-    """Physical-space errors for decoded structured pose trajectories."""
+    """Errors for decoded pose splines or native 7D LIBERO action splines."""
     if trajectory.shape != reference.shape or trajectory.ndim != 3:
         raise ValueError("trajectory and reference must share shape [B,H,D]")
     trajectory, reference = trajectory.float(), reference.float()
+    if not quaternion_slices:
+        if trajectory.shape[-1] != 7:
+            raise ValueError("native action metrics require 7D LIBERO actions")
+        difference = trajectory - reference
+        predicted_gripper = trajectory[..., -1]
+        target_gripper = reference[..., -1]
+        return {
+            "translation_rmse": difference[..., :3].square().mean().sqrt(),
+            "rotation_action_rmse": difference[..., 3:6].square().mean().sqrt(),
+            "gripper_rmse": (predicted_gripper - target_gripper).square().mean().sqrt(),
+            "gripper_accuracy": (
+                (predicted_gripper >= 0) == (target_gripper >= 0)
+            ).float().mean(),
+        }
     translations = [slice(quaternion.start - 3, quaternion.start) for quaternion in quaternion_slices]
     translation_error = torch.cat(
         [trajectory[..., part] - reference[..., part] for part in translations], dim=-1

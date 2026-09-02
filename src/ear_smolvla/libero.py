@@ -48,12 +48,9 @@ def libero_pose_from_state(state: Tensor) -> Tensor:
 
 
 class LIBEROBatchProcessor(BatchProcessor):
-    """Build fixed-future LIBERO EAR/action targets without skill annotations."""
+    """Build native-action spline targets from fixed-future LIBERO chunks."""
 
     config: LIBEROConfig
-
-    def unnormalize_actions(self, actions: Tensor) -> Tensor:
-        return actions
 
     def __call__(self, source: dict[str, Any], *, training: bool) -> dict[str, Any]:
         batch = dict(source)
@@ -93,19 +90,16 @@ class LIBEROBatchProcessor(BatchProcessor):
         if pad_mask is not None:
             mask &= ~pad_mask.bool().to(mask.device)
 
-        ear_pose = select_short_horizon(pose, mask, self.config.ear_horizon)
-        action_pose = select_short_horizon(pose, mask, self.config.action_horizon)
-        # LIBERO relative actions already use the environment's [-1, 1] convention.
-        normalized_actions = raw_actions
-        gripper = normalized_actions[..., -1:]
-        ear_gripper = select_short_horizon(gripper, mask, self.config.ear_horizon)
-        action_gripper = select_short_horizon(gripper, mask, self.config.action_horizon)
-        batch[EAR_SPLINE_TARGET] = torch.cat([ear_pose, ear_gripper], dim=-1)
-        batch[ACTION_SPLINE_TARGET] = torch.cat([action_pose, action_gripper], dim=-1)
+        batch[EAR_SPLINE_TARGET] = select_short_horizon(
+            raw_actions, mask, self.config.ear_horizon
+        )
+        batch[ACTION_SPLINE_TARGET] = select_short_horizon(
+            raw_actions, mask, self.config.action_horizon
+        )
         batch[CONTROL_MODE_TARGET] = torch.zeros(batch_size, 1, device=state.device)
 
         fast_source = select_short_horizon(
-            normalized_actions, mask, self.config.action_horizon
+            raw_actions, mask, self.config.action_horizon
         )
         batch[self.config.action_key] = fast_source
         fast, fast_mask, code_mask = self._tokenize_actions(fast_source)

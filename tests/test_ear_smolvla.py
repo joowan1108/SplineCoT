@@ -29,7 +29,6 @@ from ear_smolvla.model import (
 from ear_smolvla.processor import SPLINE_CURRENT_POSE, BatchProcessor, build_pose_targets
 from ear_smolvla.spline import (
     QuadraticSpline,
-    field_to_libero_action,
     make_quaternion_signs_continuous,
     project_quaternion_velocity,
     soften_partial_guidance,
@@ -57,6 +56,11 @@ def test_config_is_the_locked_dual_spline_architecture():
     assert (config.action_segments, config.action_parameter_count, config.action_horizon) == (6, 8, 16)
     assert config.action_horizon == 16 and config.dataset_fps == 20
     assert config.spline_dim == 15 and config.mc_samples >= 2
+    libero = LIBEROConfig(device="cpu", quantize_language_base_int8=False)
+    assert (libero.flow_prediction_type, libero.action_normalization_mode) == (
+        "sample",
+        "limits",
+    )
 
 
 def test_latency_summary_reports_percentiles_in_milliseconds():
@@ -66,17 +70,14 @@ def test_latency_summary_reports_percentiles_in_milliseconds():
     assert 3.0 < summary["p95"] < 4.0
 
 
-def test_policy_replans_only_after_full_horizon_and_anchors_to_latest_pose():
+def test_libero_policy_executes_decoded_chunk_then_replans_from_latest_observation():
     class DummySpline:
-        def closest_point_field(self, params, pose, attraction, progression):
-            batch = pose.shape[0]
-            return torch.zeros_like(pose), torch.zeros(batch), torch.zeros(batch)
-
-        def evaluate(self, params, phase):
-            return params[:, 0]
+        def decode(self, params):
+            return params
 
     class DummyModel(torch.nn.Module):
         pose_dim = 2
+        native_action_spline = True
 
         def __init__(self):
             super().__init__()
@@ -85,8 +86,9 @@ def test_policy_replans_only_after_full_horizon_and_anchors_to_latest_pose():
 
         def plan(self, pose):
             self.planned_poses.append(pose.clone())
-            params = pose.new_zeros(pose.shape[0], 3, 3)
-            params[:, 0, :2] = pose
+            params = pose.new_zeros(pose.shape[0], 2, 3)
+            params[:, 0] = 0.25
+            params[:, 1] = 0.5
             return SimpleNamespace(params=params, control_mode=pose.new_zeros(pose.shape[0], 1))
 
     class DummyPolicy(EARSmolVLAPolicy):
@@ -95,6 +97,7 @@ def test_policy_replans_only_after_full_horizon_and_anchors_to_latest_pose():
             self.config = SimpleNamespace(
                 action_horizon=2,
                 state_key="state",
+                embodiment="libero",
                 field_attraction=2.0,
                 field_progression=1.0,
             )
@@ -104,22 +107,20 @@ def test_policy_replans_only_after_full_horizon_and_anchors_to_latest_pose():
         def _planning_inputs(self, batch):
             return (batch[SPLINE_CURRENT_POSE],)
 
-        def _field_to_action(self, field, current_pose, gripper, control_mode):
-            return field
-
     def batch(pose):
         return {"state": pose, SPLINE_CURRENT_POSE: pose}
 
     policy = DummyPolicy()
     start = torch.tensor([[1.0, 2.0]])
     end = torch.tensor([[3.0, 4.0]])
-    policy.select_action(batch(start))
-    policy.select_action(batch(torch.tensor([[2.0, 3.0]])))
+    first = policy.select_action(batch(start))
+    second = policy.select_action(batch(torch.tensor([[2.0, 3.0]])))
     assert len(policy.model.planned_poses) == 1
+    torch.testing.assert_close(first, torch.full((1, 3), 0.25))
+    torch.testing.assert_close(second, torch.full((1, 3), 0.5))
     policy.select_action(batch(end))
     assert len(policy.model.planned_poses) == 2
     torch.testing.assert_close(policy.model.planned_poses[-1], end)
-    torch.testing.assert_close(policy._active.params[:, 0, :2], end)
 
 
 def test_guidance_curriculum_moves_continuously_from_teacher_to_final_mix():
@@ -136,7 +137,8 @@ def test_guidance_curriculum_moves_continuously_from_teacher_to_final_mix():
 
 def test_libero_profile_is_additive_and_trains_only_full_vision():
     config = LIBEROConfig(device="cpu")
-    assert (config.state_dim, config.action_dim, config.spline_dim, config.pose_dim) == (8, 7, 8, 7)
+    assert (config.state_dim, config.action_dim, config.spline_dim, config.pose_dim) == (8, 7, 7, 7)
+    assert config.native_action_spline and not config.condition_spline_start
     assert len(config.image_keys) == 2 and config.has_control_mode is False
     assert not config.use_language_lora and not config.use_vision_lora
     assert not config.quantize_language_base_int8
@@ -144,7 +146,7 @@ def test_libero_profile_is_additive_and_trains_only_full_vision():
     assert (config.ear_horizon, config.action_horizon, config.dataset_fps) == (32, 16, 20)
     assert config.action_phase_span == pytest.approx(15 / 31)
     guidance = QuadraticSpline(
-        config.ear_segments, config.ear_horizon, (slice(3, 7),)
+        config.ear_segments, config.ear_horizon, ()
     ).select_parameter_guidance(
         torch.zeros(1, config.ear_parameter_count, config.spline_dim),
         torch.zeros(1),
@@ -255,19 +257,34 @@ def test_zero_confidence_removes_guidance_value_and_residual_strength():
     torch.testing.assert_close(strength, torch.zeros_like(strength))
 
 
-def test_flow_condition_keeps_the_current_pose_out_of_noise():
+def test_spline_policy_flow_path_uses_clean_sample_at_t1_and_uniform_time():
     target = torch.randn(2, 5, 3)
     noise = torch.randn_like(target)
     condition = torch.zeros_like(target, dtype=torch.bool)
     condition[:, 0] = True
-    mixed, velocity, _ = EARSmolVLAModel._flow_batch(
+    time = torch.tensor([0.25, 0.75])
+    mixed, returned_time = EARSmolVLAModel._flow_batch(
         target,
-        time=torch.tensor([0.25, 0.75]),
+        time=time,
         noise=noise,
         condition_mask=condition,
     )
     torch.testing.assert_close(mixed[:, 0], target[:, 0])
-    torch.testing.assert_close(velocity[:, 0], torch.zeros_like(velocity[:, 0]))
+    expected = time[:, None, None] * target + (1 - time[:, None, None]) * noise
+    torch.testing.assert_close(mixed[:, 1:], expected[:, 1:])
+    torch.testing.assert_close(returned_time, time)
+
+
+def test_sample_prediction_scheduler_reaches_the_predicted_clean_parameters():
+    target = torch.randn(2, 4, 3)
+    holder = SimpleNamespace(config=SimpleNamespace(num_flow_steps=10))
+    result = EARSmolVLAModel._integrate(
+        holder,
+        lambda value, time: target,
+        tuple(target.shape),
+        target.device,
+    )
+    torch.testing.assert_close(result, target, atol=2e-4, rtol=2e-4)
 
 
 def test_mc_parameter_covariance_propagates_through_spline_basis():
@@ -362,7 +379,7 @@ def test_fast_tokenizer_round_trip_contract():
     assert processor.reconstruction_rmse == 0
 
 
-def test_libero_processor_builds_fixed_future_pose_splines():
+def test_libero_processor_builds_fixed_future_native_action_splines():
     class Encoding(dict):
         __getattr__ = dict.__getitem__
 
@@ -396,25 +413,32 @@ def test_libero_processor_builds_fixed_future_pose_splines():
     state = torch.zeros(1, 64, 8)
     state[..., 0] = torch.arange(64)
     actions = torch.zeros(1, 64, 7)
+    actions[..., 0] = torch.arange(64)
     batch = processor(
         {config.state_key: state, config.action_key: actions, "task": ["pick up mug"]},
         training=True,
     )
-    assert batch["spline.ear_target"].shape == (1, 32, 8)
-    assert batch["spline.action_target"].shape == (1, 16, 8)
+    assert batch["spline.ear_target"].shape == (1, 32, 7)
+    assert batch["spline.action_target"].shape == (1, 16, 7)
     torch.testing.assert_close(batch["spline.ear_target"][0, -1, 0], torch.tensor(31.0))
     torch.testing.assert_close(batch["spline.action_target"][0, -1, 0], torch.tensor(15.0))
 
 
-def test_libero_rotation_and_action_mapping():
+def test_libero_axis_angle_state_conversion():
     identity = axis_angle_to_quaternion(torch.zeros(2, 3))
     torch.testing.assert_close(identity[:, 0], torch.ones(2))
     torch.testing.assert_close(identity[:, 1:], torch.zeros(2, 3))
-    pose = torch.zeros(2, 7)
-    pose[:, 3] = 1
-    action = field_to_libero_action(torch.randn(2, 7) * 10, pose, torch.ones(2, 1))
-    assert action.shape == (2, 7)
-    assert action.abs().max() <= 1
+
+
+def test_spline_policy_target_is_linear_downsampling_not_least_squares():
+    spline = QuadraticSpline(segments=6, samples=16, quaternion_slices=())
+    trajectory = torch.arange(16, dtype=torch.float32).view(1, 16, 1).expand(-1, -1, 7)
+    dense, parameters = spline.build_training_target(trajectory)
+    expected = torch.nn.functional.interpolate(
+        trajectory.transpose(1, 2), size=8, mode="linear", align_corners=True
+    ).transpose(1, 2)
+    torch.testing.assert_close(dense, trajectory)
+    torch.testing.assert_close(parameters, expected)
 
 
 def test_quaternion_spline_decode_backward_has_no_inplace_version_error():
@@ -437,9 +461,12 @@ def test_libero_hdf5_sampler_reads_official_layout(tmp_path):
         obs.create_dataset("gripper_states", data=np.zeros((3, 2), dtype=np.float32))
         obs.create_dataset("agentview_rgb", data=np.zeros((3, 4, 4, 3), dtype=np.uint8))
         obs.create_dataset("eye_in_hand_rgb", data=np.zeros((3, 4, 4, 3), dtype=np.uint8))
-        demo.create_dataset("actions", data=np.zeros((3, 7), dtype=np.float32))
+        actions = np.zeros((3, 7), dtype=np.float32)
+        actions[:, 0] = [-2, 0, 2]
+        demo.create_dataset("actions", data=actions)
     sampler = LIBEROHDF5Sampler(path, 5, rotate_images_180=False, seed=0)
     try:
+        stats = sampler.action_normalization_stats()
         batch = sampler.sample_batch(2)
     finally:
         sampler.close()
@@ -447,6 +474,8 @@ def test_libero_hdf5_sampler_reads_official_layout(tmp_path):
     assert batch["action"].shape == (2, 5, 7)
     assert batch["observation.images.image"].shape == (2, 3, 4, 4)
     assert batch["task"] == ["pick up mug", "pick up mug"]
+    torch.testing.assert_close(stats["scale"], torch.tensor([0.5, 1, 1, 1, 1, 1, 1]))
+    torch.testing.assert_close(stats["offset"], torch.zeros(7))
 
 
 def test_libero_hdf5_sampler_excludes_libero_90_by_default(tmp_path):

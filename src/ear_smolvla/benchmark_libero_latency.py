@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .eval_libero import policy_input, task_init_states, to_device, xyzw_to_axis_angle
-from .libero import LIBEROBatchProcessor, LIBEROPolicy, libero_pose_from_state
+from .eval_libero import policy_input, task_init_states, to_device
+from .libero import LIBEROBatchProcessor, LIBEROPolicy
 from .libero_config import LIBEROConfig
 
 
@@ -129,37 +129,15 @@ def main() -> None:
 
     def action_head(context, guidance, phase):
         params = policy.model.sample_action(context, guidance, phase, current_pose)
-        return policy.model._denormalize_spline(params)
+        params = policy.model._denormalize_spline(params)
+        return policy.model._unnormalize_native_actions(params)
 
     def execute(params: torch.Tensor, current_observation: dict) -> int:
         completed = 0
-        for _ in range(execution_steps):
-            state_array = np.concatenate(
-                [
-                    current_observation["robot0_eef_pos"],
-                    xyzw_to_axis_angle(current_observation["robot0_eef_quat"]),
-                    current_observation["robot0_gripper_qpos"],
-                ]
-            ).astype(np.float32)
-            raw_state = torch.from_numpy(state_array).unsqueeze(0).to(device)
-            pose = libero_pose_from_state(raw_state)
-            field, phase, _ = policy.model.action_spline.closest_point_field(
-                params[..., : policy.model.pose_dim],
-                pose,
-                policy.config.field_attraction,
-                policy.config.field_progression,
-            )
-            gripper = policy.model.action_spline.evaluate(params, phase)[
-                ..., policy.model.pose_dim : policy.model.pose_dim + 1
-            ]
-            action = policy._field_to_action(
-                field,
-                pose,
-                gripper,
-                torch.zeros(pose.shape[0], 1, device=device),
-            )
+        actions = policy.model.action_spline.decode(params)[:, :execution_steps]
+        for action in actions[0]:
             current_observation, _, done, _ = env.step(
-                np.clip(action[0].float().cpu().numpy(), -1, 1)
+                np.clip(action.float().cpu().numpy(), -1, 1)
             )
             completed += 1
             if done:

@@ -14,10 +14,10 @@ for provenance and tensor conventions.
   quadratic spline over a 32-tick broad horizon.
 - Action expert: 16-layer flow expert producing 8 free parameters for a
   6-segment C1 quadratic spline over the next 16 ticks.
-- Execution: four ticks are normally consumed before handoff; the action
-  spline flow field is recomputed from the latest state at 20 Hz.
+- RoboCasa execution recomputes the action spline flow field from the latest
+  state. LIBERO executes the decoded native-action spline directly.
 
-Both splines use 15D structured values: base pose 7, end-effector pose 7, and
+RoboCasa splines use 15D structured values: base pose 7, end-effector pose 7, and
 continuous gripper 1. Control mode is predicted separately. The external 12D
 action order is base motion 4, control mode 1, end-effector translation 3,
 end-effector rotation 3, and gripper 1.
@@ -61,7 +61,7 @@ guidance ramps from zero after 10% of training to a final exact/soft/inferred
 1:1:1 mixture at 50%. Low-confidence segments remain valid parameters but
 contribute less to attention; there is no learned NULL guidance.
 
-For inference, preprocess with `BatchProcessor(..., training=False)` and call
+For RoboCasa inference, preprocess with `BatchProcessor(..., training=False)` and call
 `policy.select_action(batch)` every control tick. The policy executes all 16
 ticks of the Active action spline, then synchronously builds its replacement
 from the first post-horizon observation. The new spline starts at that measured
@@ -70,7 +70,8 @@ pose, providing C0 plan continuity without cross-plan C1 constraints.
 ## LIBERO profile
 
 The additive LIBERO profile leaves the RoboCasa configuration unchanged. It
-uses two cameras, state 8, action 7, and an 8D `EEF pose7 + gripper1` spline.
+uses two cameras, state 8, and a 7D native-action spline containing relative
+EEF translation 3, relative rotation 3, and gripper 1.
 The BF16 language model and LM head are fully frozen with no language LoRA;
 FAST CE trains the complete vision encoder, connector, and state projection.
 
@@ -97,8 +98,15 @@ does not install LeRobot. It samples arbitrary episode times, keeps the next
 32 real ticks for EAR and the next 16 for the action spline, and pads only at
 episode ends. Raw HDF5 images are rotated 180 degrees by default; pass
 `--no-rotate-images-180` if the local dataset was already corrected.
-LIBERO actions remain in their native `[-1,1]` convention; an optional stats
-file is applied only to the VLM state input.
+Following Spline Policy, the trainer fits a per-channel limit normalizer over
+the selected HDF5 actions and maps them to `[-1,1]`. Each normalized dense
+action chunk is linearly downsampled to `segments + 2` flow seeds: the EAR
+converts 32 actions to 12 values and the action expert converts 16 actions to
+8. Both experts predict the clean spline sample and learn only through the
+decoded dense-trajectory loss; generated parameters are inverse-normalized
+before execution. During rollout, all 16 decoded 7D actions are
+executed in order before replanning from the next observation; no quaternion
+pose field is converted into LIBERO OSC commands.
 The trainer additionally reports full 10-step inference-sampling metrics on
 one example every `--sample-metrics-every` microsteps; pass `0` to disable it.
 

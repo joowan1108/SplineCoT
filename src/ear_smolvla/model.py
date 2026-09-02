@@ -29,7 +29,6 @@ from .spline import (
     POSE_DIM,
     ParameterGuidance,
     QuadraticSpline,
-    field_to_libero_action,
     field_to_robocasa_action,
     soften_partial_guidance,
 )
@@ -41,9 +40,8 @@ def sample_noise(shape: tuple[int, ...], device: torch.device | str) -> Tensor:
     return torch.randn(shape, device=device, dtype=torch.float32)
 
 
-def sample_time_beta(batch_size: int, device: torch.device | str) -> Tensor:
-    distribution = torch.distributions.Beta(torch.tensor(1.5), torch.tensor(1.0))
-    return (distribution.sample((batch_size,)).to(device) * 0.999 + 0.001).float()
+def sample_time_uniform(batch_size: int, device: torch.device | str) -> Tensor:
+    return torch.rand(batch_size, device=device, dtype=torch.float32)
 
 
 def sinusoidal_embedding(time: Tensor, dimension: int, device: torch.device) -> Tensor:
@@ -333,10 +331,9 @@ class EARSmolVLAModel(nn.Module):
 
         self.state_proj = nn.Linear(config.max_state_dim, context_dim)
         self.pose_dim = getattr(config, "pose_dim", POSE_DIM)
+        self.native_action_spline = getattr(config, "native_action_spline", False)
         self.quaternion_slices = (
-            (slice(3, 7),)
-            if getattr(config, "embodiment", "robocasa") == "libero"
-            else (slice(3, 7), slice(10, 14))
+            () if self.native_action_spline else (slice(3, 7), slice(10, 14))
         )
         self.ear_spline = QuadraticSpline(config.ear_segments, config.ear_horizon, self.quaternion_slices)
         self.action_spline = QuadraticSpline(
@@ -358,6 +355,8 @@ class EARSmolVLAModel(nn.Module):
             config=config,
         )
         self.mode_head = nn.Linear(context_dim, 1) if getattr(config, "has_control_mode", True) else None
+        self.register_buffer("action_normalizer_scale", torch.ones(config.spline_dim))
+        self.register_buffer("action_normalizer_offset", torch.zeros(config.spline_dim))
         self.register_buffer("_zero", torch.tensor(0.0), persistent=False)
         self._validate_backbone_partition()
         for parameter in self.parameters():
@@ -418,12 +417,41 @@ class EARSmolVLAModel(nn.Module):
     def _denormalize_spline(self, value: Tensor) -> Tensor:
         return value * self._spline_scale(value)
 
+    def set_action_normalizer(self, scale: Tensor, offset: Tensor) -> None:
+        expected = (self.config.spline_dim,)
+        if tuple(scale.shape) != expected or tuple(offset.shape) != expected:
+            raise ValueError(f"Action normalizer must have shape {expected}")
+        if (scale <= 0).any():
+            raise ValueError("Action normalization scale must be positive")
+        self.action_normalizer_scale.copy_(scale.to(self.action_normalizer_scale))
+        self.action_normalizer_offset.copy_(offset.to(self.action_normalizer_offset))
+
+    def _normalize_native_actions(self, value: Tensor) -> Tensor:
+        return (
+            value * self.action_normalizer_scale.to(value)
+            + self.action_normalizer_offset.to(value)
+        )
+
+    def _unnormalize_native_actions(self, value: Tensor) -> Tensor:
+        return (value - self.action_normalizer_offset.to(value)) / (
+            self.action_normalizer_scale.to(value)
+        )
+
     def _start_condition(self, current_pose: Tensor, parameter_count: int) -> tuple[Tensor, Tensor]:
         value = current_pose.new_zeros(current_pose.shape[0], parameter_count, self.config.spline_dim)
         mask = torch.zeros_like(value, dtype=torch.bool)
-        value[:, 0, : self.pose_dim] = current_pose
-        mask[:, 0, : self.pose_dim] = True
+        if getattr(self.config, "condition_spline_start", True):
+            value[:, 0, : self.pose_dim] = current_pose
+            mask[:, 0, : self.pose_dim] = True
         return self._normalize_spline(value), mask
+
+    def _build_spline_target(
+        self, spline: QuadraticSpline, trajectory: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        if self.native_action_spline:
+            return spline.build_training_target(self._normalize_native_actions(trajectory))
+        parameters = spline.fit(trajectory, constrain_start=True)
+        return trajectory, self._normalize_spline(parameters)
 
     def embed_images(
         self, images: list[Tensor], image_masks: list[Tensor]
@@ -507,17 +535,13 @@ class EARSmolVLAModel(nn.Module):
         time: Tensor | None = None,
         noise: Tensor | None = None,
         condition_mask: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         noise = sample_noise(tuple(target.shape), target.device) if noise is None else noise
+        time = sample_time_uniform(target.shape[0], target.device) if time is None else time
+        x_t = time[:, None, None] * target + (1 - time[:, None, None]) * noise
         if condition_mask is not None:
-            noise = torch.where(condition_mask, target, noise)
-        time = sample_time_beta(target.shape[0], target.device) if time is None else time
-        x_t = time[:, None, None] * noise + (1 - time[:, None, None]) * target
-        return x_t, noise - target, time
-
-    @staticmethod
-    def _unconditioned_mse(prediction: Tensor, target: Tensor, condition_mask: Tensor) -> Tensor:
-        return (prediction - target).square().masked_select(~condition_mask).mean()
+            x_t = torch.where(condition_mask, target, x_t)
+        return x_t, time
 
     def _trajectory_loss(
         self,
@@ -525,8 +549,23 @@ class EARSmolVLAModel(nn.Module):
         normalized_params: Tensor,
         target: Tensor,
     ) -> Tensor:
+        if self.native_action_spline:
+            return F.mse_loss(spline.decode(normalized_params), target)
         decoded = spline.decode(self._denormalize_spline(normalized_params))
         return F.mse_loss(self._normalize_spline(decoded), self._normalize_spline(target))
+
+    def _metric_trajectories(
+        self,
+        spline: QuadraticSpline,
+        normalized_params: Tensor,
+        target: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        if self.native_action_spline:
+            return (
+                self._unnormalize_native_actions(spline.decode(normalized_params)),
+                self._unnormalize_native_actions(target),
+            )
+        return spline.decode(self._denormalize_spline(normalized_params)), target
 
     def forward(
         self,
@@ -544,9 +583,9 @@ class EARSmolVLAModel(nn.Module):
         control_mode_target: Tensor,
         guidance_progress: float = 1.0,
     ) -> dict[str, Tensor]:
+        ear_target, ear_params = self._build_spline_target(self.ear_spline, ear_target)
+        action_target, action_params = self._build_spline_target(self.action_spline, action_target)
         current_pose = ear_target[:, 0, : self.pose_dim]
-        ear_params = self._normalize_spline(self.ear_spline.fit(ear_target, constrain_start=True))
-        action_params = self._normalize_spline(self.action_spline.fit(action_target, constrain_start=True))
         _, ear_condition_mask = self._start_condition(current_pose, self.config.ear_parameter_count)
         _, action_condition_mask = self._start_condition(current_pose, self.config.action_parameter_count)
         phase = torch.zeros(ear_params.shape[0], device=ear_params.device)
@@ -592,17 +631,19 @@ class EARSmolVLAModel(nn.Module):
                     inferred_confidence[row] = distribution.segment_confidence[0]
 
         if self.config.train_spline_reasoner:
-            ear_x, ear_velocity, ear_time = self._flow_batch(ear_params, condition_mask=ear_condition_mask)
-            ear_prediction = self.ear_expert(ear_x, ear_time, expert_context)
-            ear_flow_loss = self._unconditioned_mse(ear_prediction, ear_velocity, ear_condition_mask)
-            predicted_ear_params = ear_x - ear_time[:, None, None] * ear_prediction
+            ear_x, ear_time = self._flow_batch(ear_params, condition_mask=ear_condition_mask)
+            predicted_ear_params = self.ear_expert(ear_x, ear_time, expert_context)
             predicted_ear_params = torch.where(ear_condition_mask, ear_params, predicted_ear_params)
             ear_trajectory_loss = self._trajectory_loss(self.ear_spline, predicted_ear_params, ear_target)
-            ear_loss = ear_flow_loss + (self.config.trajectory_reconstruction_weight * ear_trajectory_loss)
+            ear_flow_loss = self._zero.detach()
+            ear_loss = self.config.trajectory_reconstruction_weight * ear_trajectory_loss
             with torch.no_grad():
+                ear_prediction_trajectory, ear_reference_trajectory = self._metric_trajectories(
+                    self.ear_spline, predicted_ear_params, ear_target
+                )
                 ear_metrics = spline_trajectory_errors(
-                    self.ear_spline.decode(self._denormalize_spline(predicted_ear_params)),
-                    ear_target,
+                    ear_prediction_trajectory,
+                    ear_reference_trajectory,
                     self.quaternion_slices,
                 )
         else:
@@ -635,10 +676,10 @@ class EARSmolVLAModel(nn.Module):
                 guidance.confidence[inferred_rows] = inferred_guidance.confidence
             if self.config.detach_action_guidance:
                 guidance = guidance.detached()
-            action_x, action_velocity, action_time = self._flow_batch(
+            action_x, action_time = self._flow_batch(
                 action_params, condition_mask=action_condition_mask
             )
-            action_prediction = self.action_expert(
+            predicted_action_params = self.action_expert(
                 action_x,
                 action_time,
                 expert_context,
@@ -646,23 +687,23 @@ class EARSmolVLAModel(nn.Module):
                 phase,
                 self.config.action_phase_span,
             )
-            action_flow_loss = self._unconditioned_mse(
-                action_prediction, action_velocity, action_condition_mask
-            )
-            predicted_action_params = action_x - action_time[:, None, None] * action_prediction
             predicted_action_params = torch.where(
                 action_condition_mask, action_params, predicted_action_params
             )
             action_trajectory_loss = self._trajectory_loss(
                 self.action_spline, predicted_action_params, action_target
             )
-            action_loss = action_flow_loss + (
-                self.config.trajectory_reconstruction_weight * action_trajectory_loss
-            )
+            action_flow_loss = self._zero.detach()
+            action_loss = self.config.trajectory_reconstruction_weight * action_trajectory_loss
             with torch.no_grad():
+                action_prediction_trajectory, action_reference_trajectory = (
+                    self._metric_trajectories(
+                        self.action_spline, predicted_action_params, action_target
+                    )
+                )
                 action_metrics = spline_trajectory_errors(
-                    self.action_spline.decode(self._denormalize_spline(predicted_action_params)),
-                    action_target,
+                    action_prediction_trajectory,
+                    action_reference_trajectory,
                     self.quaternion_slices,
                 )
             if self.mode_head is not None:
@@ -704,7 +745,7 @@ class EARSmolVLAModel(nn.Module):
 
     def _integrate(
         self,
-        velocity_fn,
+        sample_fn,
         shape: tuple[int, ...],
         device: torch.device,
         condition: tuple[Tensor, Tensor] | None = None,
@@ -713,10 +754,12 @@ class EARSmolVLAModel(nn.Module):
         if condition is not None:
             condition_value, condition_mask = condition
             value = torch.where(condition_mask, condition_value, value)
-        delta = -1.0 / self.config.num_flow_steps
+        delta = 1.0 / self.config.num_flow_steps
         for step in range(self.config.num_flow_steps):
-            time = torch.full((shape[0],), 1.0 + step * delta, device=device)
-            value = value + delta * velocity_fn(value, time)
+            time = torch.full((shape[0],), step * delta, device=device)
+            clean_sample = sample_fn(value, time)
+            velocity = (clean_sample - value) / (1 - time[:, None, None] + 1e-5)
+            value = value + delta * velocity
             if condition is not None:
                 value = torch.where(condition_mask, condition_value, value)
         return value
@@ -760,9 +803,14 @@ class EARSmolVLAModel(nn.Module):
             self.config.confidence_temperature,
             self.config.confidence_variance_threshold,
         )
+        reported_mean = self._denormalize_spline(mean)
+        reported_samples = self._denormalize_spline(sample_tensor)
+        if self.native_action_spline:
+            reported_mean = self._unnormalize_native_actions(reported_mean)
+            reported_samples = self._unnormalize_native_actions(reported_samples)
         return mean, EARPlan(
-            self._denormalize_spline(mean),
-            self._denormalize_spline(sample_tensor),
+            reported_mean,
+            reported_samples,
             covariance,
             variance,
             confidence,
@@ -816,7 +864,11 @@ class EARSmolVLAModel(nn.Module):
             self.config.action_phase_span,
             ear.segment_confidence,
         ).detached()
-        action_params = self._denormalize_spline(self.sample_action(context, guidance, phase, current_pose))
+        action_params = self._denormalize_spline(
+            self.sample_action(context, guidance, phase, current_pose)
+        )
+        if self.native_action_spline:
+            action_params = self._unnormalize_native_actions(action_params)
         if self.mode_head is None:
             mode = torch.zeros(context.final.shape[0], 1, device=context.final.device)
         else:
@@ -944,7 +996,7 @@ class EARSmolVLAPolicy(nn.Module):
         self, field: Tensor, current_pose: Tensor, gripper: Tensor, control_mode: Tensor
     ) -> Tensor:
         if getattr(self.config, "embodiment", "robocasa") == "libero":
-            return field_to_libero_action(field, current_pose, gripper)
+            raise RuntimeError("LIBERO executes decoded native-action splines, not pose fields")
         return field_to_robocasa_action(field, current_pose, gripper, control_mode)
 
     @torch.no_grad()
@@ -952,6 +1004,8 @@ class EARSmolVLAPolicy(nn.Module):
         self.eval()
         plan = self.model.plan(*self._planning_inputs(batch))
         trajectory = self.model.action_spline.decode(plan.params)
+        if self.model.native_action_spline:
+            return trajectory.clamp(-1, 1)
         pose_dim = self.model.pose_dim
         next_pose = torch.cat([trajectory[:, 1:, :pose_dim], trajectory[:, -1:, :pose_dim]], dim=1)
         pose_field = (next_pose - trajectory[..., :pose_dim]) * self.config.dataset_fps
@@ -971,6 +1025,11 @@ class EARSmolVLAPolicy(nn.Module):
         if self._active is None or self._steps_on_active >= self.config.action_horizon:
             self._active = self.model.plan(*self._planning_inputs(batch))
             self._steps_on_active = 0
+        if self.model.native_action_spline:
+            trajectory = self.model.action_spline.decode(self._active.params)
+            action = trajectory[:, self._steps_on_active].clamp(-1, 1)
+            self._steps_on_active += 1
+            return action
         raw = batch[self.config.state_key]
         raw = raw[:, 0] if raw.ndim == 3 else raw
         current_pose = batch.get(SPLINE_CURRENT_POSE, raw[:, : self.model.pose_dim])
@@ -991,8 +1050,13 @@ class EARSmolVLAPolicy(nn.Module):
         path = Path(directory)
         self.config.save(path)
         trainable = {name for name, parameter in self.named_parameters() if parameter.requires_grad}
+        normalizer = {"model.action_normalizer_scale", "model.action_normalizer_offset"}
         torch.save(
-            {name: value.detach().cpu() for name, value in self.state_dict().items() if name in trainable},
+            {
+                name: value.detach().cpu()
+                for name, value in self.state_dict().items()
+                if name in trainable or name in normalizer
+            },
             path / "trainable_state.pt",
         )
 

@@ -1,4 +1,4 @@
-"""Plot ground-truth, EAR, and action splines in the EEF XY plane."""
+"""Plot cumulative native-action translations for ground-truth and predicted splines."""
 
 from __future__ import annotations
 
@@ -45,7 +45,14 @@ def save_top_view(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     figure, axis = plt.subplots(figsize=(7, 7))
+
+    def cumulative_xy(trajectory: np.ndarray) -> np.ndarray:
+        result = trajectory.copy()
+        result[:, :2] = np.cumsum(result[:, :2], axis=0)
+        return result
+
     for index, trajectory in enumerate(ear_samples):
+        trajectory = cumulative_xy(trajectory)
         axis.plot(
             trajectory[:, 0],
             trajectory[:, 1],
@@ -61,6 +68,7 @@ def save_top_view(
         ("Action prediction", action),
     )
     for label, trajectory in series:
+        trajectory = cumulative_xy(trajectory)
         style = TOP_VIEW_STYLES[label]
         horizon = (len(trajectory) - 1) / fps
         axis.plot(
@@ -73,15 +81,19 @@ def save_top_view(
             **style,
         )
     axis.scatter(
-        ear_ground_truth[0, 0],
-        ear_ground_truth[0, 1],
+        0,
+        0,
         color="#CC79A7",
         marker="*",
         s=180,
-        label="Current EEF",
+        label="Action origin",
         zorder=5,
     )
-    axis.set(title=task, xlabel="EEF x (m)", ylabel="EEF y (m)")
+    axis.set(
+        title=task,
+        xlabel="Cumulative normalized translation command x",
+        ylabel="Cumulative normalized translation command y",
+    )
     axis.text(
         0.99,
         0.01,
@@ -145,12 +157,14 @@ def main() -> None:
             batch = to_device(processor(raw, training=True), device)
             with torch.no_grad():
                 plan = policy.model.plan(*policy._planning_inputs(batch))
-                ear_ground_truth = policy.model.ear_spline.decode(
-                    policy.model.ear_spline.fit(batch[EAR_SPLINE_TARGET], constrain_start=True)
+                _, ear_parameters = policy.model.ear_spline.build_training_target(
+                    batch[EAR_SPLINE_TARGET]
                 )
-                action_ground_truth = policy.model.action_spline.decode(
-                    policy.model.action_spline.fit(batch[ACTION_SPLINE_TARGET], constrain_start=True)
+                _, action_parameters = policy.model.action_spline.build_training_target(
+                    batch[ACTION_SPLINE_TARGET]
                 )
+                ear_ground_truth = policy.model.ear_spline.decode(ear_parameters)
+                action_ground_truth = policy.model.action_spline.decode(action_parameters)
                 ear = policy.model.ear_spline.decode(plan.ear.mean)
                 action = policy.model.action_spline.decode(plan.params)
                 ear_samples = [

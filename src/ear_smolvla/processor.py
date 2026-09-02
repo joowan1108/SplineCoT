@@ -100,12 +100,16 @@ class BatchProcessor:
         stats = self.stats.get(key)
         if not stats:
             return value
+        if "scale" in stats and "offset" in stats:
+            return value * stats["scale"].to(value) + stats["offset"].to(value)
         return (value - stats["mean"].to(value)) / stats["std"].to(value).clamp_min(1e-6)
 
     def unnormalize_actions(self, actions: Tensor) -> Tensor:
         stats = self.stats.get(self.config.action_key)
         if not stats:
             return actions
+        if "scale" in stats and "offset" in stats:
+            return (actions - stats["offset"].to(actions)) / stats["scale"].to(actions)
         return actions * stats["std"].to(actions) + stats["mean"].to(actions)
 
     def _tokenize_actions(self, actions: Tensor) -> tuple[Tensor, Tensor, Tensor]:

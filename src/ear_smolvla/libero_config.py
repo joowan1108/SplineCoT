@@ -17,8 +17,11 @@ class LIBEROConfig(EARSmolVLAConfig):
     resize_imgs_with_padding: tuple[int, int] = (256, 256)
     state_dim: int = 8  # EEF position3 + axis-angle3 + gripper qpos2
     action_dim: int = 7  # relative EEF translation3 + rotation3 + gripper1
-    spline_dim: int = 8  # absolute EEF position3 + quaternion4 + gripper1
+    spline_dim: int = 7  # native LIBERO action: delta translation3 + rotation3 + gripper1
     pose_dim: int = 7
+    native_action_spline: bool = True
+    condition_spline_start: bool = False
+    action_normalization_mode: str = "limits"
     has_control_mode: bool = False
     initial_gripper_command: float = -1.0
 
@@ -41,8 +44,14 @@ class LIBEROConfig(EARSmolVLAConfig):
     def __post_init__(self) -> None:
         if self.embodiment != "libero":
             raise ValueError("LIBEROConfig embodiment must be libero")
-        if (self.state_dim, self.action_dim, self.spline_dim, self.pose_dim) != (8, 7, 8, 7):
-            raise ValueError("LIBERO dimensions must be state8, action7, spline8, pose7")
+        if (self.state_dim, self.action_dim, self.spline_dim, self.pose_dim) != (8, 7, 7, 7):
+            raise ValueError("LIBERO dimensions must be state8, action7, spline7, pose7")
+        if not self.native_action_spline or self.condition_spline_start:
+            raise ValueError("LIBERO uses unconditioned native-action spline parameters")
+        if self.flow_prediction_type != "sample" or self.action_normalization_mode != "limits":
+            raise ValueError(
+                "LIBERO follows Spline Policy sample prediction and limit normalization"
+            )
         if len(self.image_keys) != 2:
             raise ValueError("LIBERO requires agent-view and wrist cameras")
         if self.use_language_lora or self.use_vision_lora:
@@ -70,8 +79,8 @@ class LIBEROConfig(EARSmolVLAConfig):
             raise ValueError("partial guidance confidence range must lie in [0, 1]")
         if min(self.spline_translation_scale, self.spline_rotation_scale, self.spline_gripper_scale) <= 0:
             raise ValueError("spline channel scales must be positive")
-        if self.trajectory_reconstruction_weight < 0:
-            raise ValueError("trajectory_reconstruction_weight must be nonnegative")
+        if self.trajectory_reconstruction_weight != 1:
+            raise ValueError("Spline Policy uses an unweighted decoded-trajectory loss")
         if self.quantize_language_base_int8 and not self.load_vlm_weights:
             raise ValueError("INT8 language loading requires pretrained weights")
         if self.training_kv_cache:

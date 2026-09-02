@@ -46,6 +46,7 @@ class EARSmolVLAConfig:
     action_horizon: int = 16
     dataset_fps: float = 20.0
     num_flow_steps: int = 10
+    flow_prediction_type: str = "sample"
 
     tokenizer_max_length: int = 96
     max_action_tokens: int = 256
@@ -175,6 +176,8 @@ class EARSmolVLAConfig:
             raise ValueError("INT8 quantization requires pretrained VLM weights")
         if self.training_kv_cache:
             raise ValueError("Persistent KV caching must remain disabled during training")
+        if self.flow_prediction_type != "sample":
+            raise ValueError("Spline Policy flow matching predicts the clean spline sample")
         if self.spline_basis_version != "quadratic-c1-kplus2-v1":
             raise ValueError(f"Unsupported spline basis {self.spline_basis_version}")
         if self.curriculum_stage not in {"vlm_warmup", "joint_teacher_forced"}:

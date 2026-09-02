@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 
 BASE_QUAT = slice(3, 7)
@@ -157,6 +158,24 @@ class QuadraticSpline(nn.Module):
             )
             return torch.cat([start, tail], dim=-2)
         return torch.einsum("ph,...hd->...pd", self.fit_matrix, trajectory)
+
+    def build_training_target(self, trajectory: Tensor) -> tuple[Tensor, Tensor]:
+        """Build the dense and downsampled action targets used by Spline Policy."""
+        if trajectory.ndim != 3:
+            raise ValueError("trajectory must have shape [B,H,D]")
+        dense = F.interpolate(
+            trajectory.transpose(1, 2),
+            size=self.samples,
+            mode="linear",
+            align_corners=True,
+        ).transpose(1, 2)
+        parameters = F.interpolate(
+            dense.transpose(1, 2),
+            size=self.segments + 2,
+            mode="linear",
+            align_corners=True,
+        ).transpose(1, 2)
+        return dense, parameters
 
     def decode(self, params: Tensor, samples: int | None = None) -> Tensor:
         sample_count = samples or self.samples
@@ -375,13 +394,3 @@ def field_to_robocasa_action(
     ee_angular = quaternion_component_velocity_to_angular(current_pose[..., EE_QUAT], field[..., EE_QUAT])
     base = torch.cat([field[..., :3], base_angular[..., 2:3]], dim=-1)
     return torch.cat([base, control_mode, field[..., 7:10], ee_angular, gripper[..., :1]], dim=-1)
-
-
-def field_to_libero_action(field: Tensor, current_pose: Tensor, gripper: Tensor) -> Tensor:
-    """Map absolute EEF-pose flow to LIBERO relative OSC pose actions."""
-    quaternion_slice = slice(3, 7)
-    field = project_quaternion_velocity(field, current_pose, (quaternion_slice,))
-    angular = quaternion_component_velocity_to_angular(
-        current_pose[..., quaternion_slice], field[..., quaternion_slice]
-    )
-    return torch.cat([field[..., :3], angular, gripper[..., :1]], dim=-1).clamp(-1, 1)
